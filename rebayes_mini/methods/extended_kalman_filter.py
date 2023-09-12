@@ -13,16 +13,20 @@ class EKFBel:
 
 class ExpfamExtendedKalmanFilter:
     def __init__(
-        self, link_fn, log_partition, suff_statistic, dynamics_covariance,
+        self, apply_fn, log_partition, suff_statistic, dynamics_covariance,
     ):
-        self.link_fn = link_fn
+        """
+        apply_fn: function
+            Maps state and observation to the natural parameters
+        """
+        self.apply_fn = apply_fn
         self.log_partition = log_partition
         self.suff_statistic = suff_statistic
         self.dynamics_covariance = dynamics_covariance
 
     def init_bel(self, params, cov=1.0):
-        self.rfn, self.apply_fn = self._initialise_link_fn(self.link_fn, params)
-        self.grad_apply_fn = jax.jacfwd(self.apply_fn)
+        self.rfn, self.link_fn = self._initialise_link_fn(self.apply_fn, params)
+        self.grad_link_fn = jax.jacfwd(self.link_fn)
 
         flat_params, _ = ravel_pytree(params)
         nparams = len(flat_params)
@@ -32,14 +36,14 @@ class ExpfamExtendedKalmanFilter:
             cov=jnp.eye(nparams) * cov,
         )
 
-    def _initialise_link_fn(self, link_fn, params):
+    def _initialise_link_fn(self, apply_fn, params):
         _, rfn = ravel_pytree(params)
 
         @jax.jit
-        def apply_fn(params, x):
-            return link_fn(rfn(params), x)
+        def link_fn(params, x):
+            return apply_fn(rfn(params), x)
 
-        return rfn, apply_fn
+        return rfn, link_fn
 
     @partial(jax.jit, static_argnums=(0,))
     def mean(self, eta):
@@ -56,12 +60,12 @@ class ExpfamExtendedKalmanFilter:
         nparams = len(pmean_pred)
         I = jnp.eye(nparams)
         
-        eta = self.apply_fn(bel.mean, xt).astype(float)
+        eta = self.link_fn(bel.mean, xt).astype(float)
         yhat = self.mean(eta)
         err = self.suff_statistic(yt) - yhat
         Rt = self.covariance(eta)
         
-        Ht = self.grad_apply_fn(pmean_pred, xt)
+        Ht = self.grad_link_fn(pmean_pred, xt)
         Kt = jnp.linalg.solve(Ht @ pcov_pred @ Ht.T + Rt, Ht @ pcov_pred).T
         
         pcov = (I - Kt @ Ht) @ pcov_pred
