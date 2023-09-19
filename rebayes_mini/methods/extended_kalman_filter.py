@@ -11,7 +11,7 @@ class EKFBel:
     cov: chex.Array
 
 
-class ExpfamExtendedKalmanFilter:
+class ExpfamFilter:
     def __init__(
         self, apply_fn, log_partition, suff_statistic, dynamics_covariance,
     ):
