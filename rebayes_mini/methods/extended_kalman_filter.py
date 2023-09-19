@@ -79,7 +79,6 @@ class ExpfamFilter:
         bels, hist = jax.lax.scan(self.step, bel, xs)
         return bels, hist
 
-
     def predict_obs(self):
         ... 
     
@@ -88,4 +87,51 @@ class ExpfamFilter:
 
     def update_bel(self):
         ...
+
+
+class BernoulliFilter(ExpfamFilter):
+    def __init__(self, apply_fn, dynamics_covariance):
+        super().__init__(
+            apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
+        )
     
+    @partial(jax.jit, static_argnums=(0,))
+    def _log_partition(self, eta):
+        return jnp.log1p(jnp.exp(eta)).sum()
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _suff_stat(self, y):
+        return y
+
+
+class MultinomialFilter(ExpfamFilter):
+    def __init__(self, apply_fn, dynamics_covariance):
+        super().__init__(
+            apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
+        )
+    
+    @partial(jax.jit, static_argnums=(0,))
+    def _log_partition(self, eta):
+        eta = jnp.append(eta, 0.0)
+        return jax.nn.logsumexp(eta).sum()
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _suff_stat(self, y):
+        return y
+
+
+class HeteroskedasticGaussianFilter(ExpfamFilter):
+    def __init__(self, apply_fn, dynamics_covariance):
+        super().__init__(
+            apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
+        )
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _log_partition(self, eta):
+        eta1, eta2 = eta
+        return -eta1 ** 2 / (4 * eta2) - jnp.log(-2 * eta2) / 2
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _suff_stat(self, y):
+        return jnp.array([y, y ** 2])
+
