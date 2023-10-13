@@ -5,7 +5,7 @@ from jax.flatten_util import ravel_pytree
 from functools import partial
 
 @chex.dataclass
-class EKFBel:
+class EKFState:
     """State of the EKF."""
     mean: chex.Array
     cov: chex.Array
@@ -31,7 +31,7 @@ class ExpfamFilter:
         flat_params, _ = ravel_pytree(params)
         nparams = len(flat_params)
 
-        return EKFBel(
+        return EKFState(
             mean=flat_params,
             cov=jnp.eye(nparams) * cov,
         )
@@ -87,6 +87,22 @@ class ExpfamFilter:
 
     def update_bel(self):
         ...
+
+
+class GaussianFilter(ExpfamFilter):
+    def __init__(self, apply_fn, dynamics_covariance, variance=1.0):
+        super().__init__(
+            apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
+        )
+        self.variance = variance
+    
+    @partial(jax.jit, static_argnums=(0,))
+    def _log_partition(self, eta):
+        return (eta ** 2 / 2).squeeze()
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _suff_stat(self, y):
+        return y / jnp.sqrt(self.variance)
 
 
 class BernoulliFilter(ExpfamFilter):
