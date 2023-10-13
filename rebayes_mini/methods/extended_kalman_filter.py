@@ -55,10 +55,10 @@ class ExpfamFilter:
 
     def step(self, bel, xs):
         xt, yt = xs
-        pcov_pred = bel.cov + self.dynamics_covariance
         pmean_pred = bel.mean
         nparams = len(pmean_pred)
         I = jnp.eye(nparams)
+        pcov_pred = bel.cov + self.dynamics_covariance * I
 
         eta = self.link_fn(bel.mean, xt).astype(float)
         yhat = self.mean(eta)
@@ -89,7 +89,7 @@ class GaussianFilter(ExpfamFilter):
 
     @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
-        return (eta ** 2 / 2).squeeze()
+        return (eta ** 2 / 2).sum()
 
     @partial(jax.jit, static_argnums=(0,))
     def _suff_stat(self, y):
