@@ -59,34 +59,25 @@ class ExpfamFilter:
         pmean_pred = bel.mean
         nparams = len(pmean_pred)
         I = jnp.eye(nparams)
-        
+
         eta = self.link_fn(bel.mean, xt).astype(float)
         yhat = self.mean(eta)
         err = self.suff_statistic(yt) - yhat
         Rt = self.covariance(eta)
-        
+
         Ht = self.grad_link_fn(pmean_pred, xt)
         Kt = jnp.linalg.solve(Ht @ pcov_pred @ Ht.T + Rt, Ht @ pcov_pred).T
-        
+
         pcov = (I - Kt @ Ht) @ pcov_pred
         pmean = pmean_pred + (Kt @ err).squeeze()
-        
+
         bel = bel.replace(mean=pmean, cov=pcov)
         return bel, bel.replace(cov=0.0) # Save memory
-    
-    def scan(self, bel, X, y):
+
+    def scan(self, bel, y, X):
         xs = (X, y)
         bels, hist = jax.lax.scan(self.step, bel, xs)
         return bels, hist
-
-    def predict_obs(self):
-        ... 
-    
-    def predict_bel(self):
-        ...
-
-    def update_bel(self):
-        ...
 
 
 class GaussianFilter(ExpfamFilter):
@@ -95,7 +86,7 @@ class GaussianFilter(ExpfamFilter):
             apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
         )
         self.variance = variance
-    
+
     @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
         return (eta ** 2 / 2).squeeze()
@@ -110,7 +101,7 @@ class BernoulliFilter(ExpfamFilter):
         super().__init__(
             apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
         )
-    
+
     @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
         return jnp.log1p(jnp.exp(eta)).sum()
@@ -125,7 +116,7 @@ class MultinomialFilter(ExpfamFilter):
         super().__init__(
             apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
         )
-    
+
     @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
         eta = jnp.append(eta, 0.0)
