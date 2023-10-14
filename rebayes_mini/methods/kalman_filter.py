@@ -5,10 +5,27 @@ from jax.flatten_util import ravel_pytree
 from functools import partial
 
 @chex.dataclass
-class EKFState:
-    """State of the EKF."""
+class KFState:
+    """State of the Kalman Filter"""
     mean: chex.Array
     cov: chex.Array
+
+
+class KalmanFilter:
+    def __init__(
+        self, transition_matrix, transition_covariance, observation_covariance,
+    ):
+        self.transition_matrix = transition_matrix
+        self.transition_covariance = transition_covariance
+        self.observation_covariance = observation_covariance
+    
+    def init_bel(self, mean, cov=1.0):
+        return KFState(
+            mean=mean,
+            cov=jnp.eye(len(mean)) * cov,
+        )
+
+    
 
 
 class ExpfamFilter:
@@ -31,7 +48,7 @@ class ExpfamFilter:
         flat_params, _ = ravel_pytree(params)
         nparams = len(flat_params)
 
-        return EKFState(
+        return KFState(
             mean=flat_params,
             cov=jnp.eye(nparams) * cov,
         )
