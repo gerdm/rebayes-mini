@@ -11,7 +11,7 @@ class KFState:
     cov: chex.Array
 
 
-class KalmanFilter:
+class LinearFilter:
     def __init__(
         self, transition_matrix, transition_covariance, observation_covariance,
     ):
@@ -24,8 +24,49 @@ class KalmanFilter:
             mean=mean,
             cov=jnp.eye(len(mean)) * cov,
         )
+    
+    def step(self, bel, y, obs_matrix):
+        # Predict step
+        mean_pred = self.transition_matrix @ bel.mean
+        cov_pred = self.transition_matrix @ bel.cov @ self.transition_matrix.T + self.transition_covariance
+
+        # Update step
+        err = y - obs_matrix @ mean_pred
+        S = obs_matrix @ cov_pred @ obs_matrix.T + self.observation_covariance
+        K = jnp.linalg.solve(S, obs_matrix @ cov_pred).T
+        mean = mean_pred + K @ err
+        cov = cov_pred - K @ S @ K.T
+
+        bel = bel.replace(mean=mean, cov=cov)
+        return bel
+    
+
+    def initialise_active_step(self, y, X):
+        """
+        Create a step function that makes either
+        the observation matrix fixed or part of the 
+        filtering process as a function of t
+        """
+        if X.shape[0] != y.shape[0]:
+            def _step(bel, y):
+                bel = self.step(bel, y, X)
+                return bel, bel.mean
+            xs = y
+        else:
+            def _step(bel, xs):
+                x, y = xs
+                bel = self.step(bel, y, x)
+                return bel, bel.mean
+            xs = (y, X)
+        
+        return _step, xs
 
     
+    def scan(self, bel, y, X):
+        _step, xs = self.initialise_active_step(y, X)
+        bel, hist = jax.lax.scan(_step, bel, xs)
+        return bel, hist
+
 
 
 class ExpfamFilter:
