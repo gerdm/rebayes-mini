@@ -26,7 +26,7 @@ class LinearFilter:
             cov=jnp.eye(len(mean)) * cov,
         )
     
-    def step(self, bel, y, obs_matrix):
+    def step(self, bel, y, obs_matrix, callback_fn):
         # Predict step
         mean_pred = self.transition_matrix @ bel.mean
         cov_pred = self.transition_matrix @ bel.cov @ self.transition_matrix.T + self.transition_covariance
@@ -114,7 +114,7 @@ class ExpfamFilter:
     def covariance(self, eta):
         return jax.hessian(self.log_partition)(eta).squeeze()
 
-    def step(self, bel, xs):
+    def step(self, bel, xs, callback_fn):
         xt, yt = xs
         pmean_pred = bel.mean
         nparams = len(pmean_pred)
@@ -132,12 +132,15 @@ class ExpfamFilter:
         pcov = (I - Kt @ Ht) @ pcov_pred
         pmean = pmean_pred + (Kt @ err).squeeze()
 
-        bel = bel.replace(mean=pmean, cov=pcov)
-        return bel, bel.replace(cov=0.0) # Save memory
+        bel_new = bel.replace(mean=pmean, cov=pcov)
+        output = callback_fn(bel_new, bel, xt, yt)
+        return bel_new, output
 
-    def scan(self, bel, y, X):
+    def scan(self, bel, y, X, callback=None):
         xs = (X, y)
-        bels, hist = jax.lax.scan(self.step, bel, xs)
+        callback = callbacks.get_null if callback is None else callback
+        _step = partial(self.step, callback_fn=callback)
+        bels, hist = jax.lax.scan(_step, bel, xs)
         return bels, hist
 
 
