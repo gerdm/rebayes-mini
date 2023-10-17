@@ -4,6 +4,7 @@ import jax.numpy as jnp
 from typing import Tuple
 from functools import partial
 from flax.training.train_state import TrainState
+from rebayes_mini import callbacks
 
 
 class FifoTrainState(TrainState):
@@ -125,14 +126,15 @@ class FifoSGD:
         _, bel = self._train_step(bel)
         return bel
     
-    @partial(jax.jit, static_argnums=(0,))
-    def _step(self, bel, xs):
+    def _step(self, bel, xs, callback_fn):
         X, y = xs
-        bel = self.update_state(bel, X, y)
-        return bel, bel.mean
+        bel_update = self.update_state(bel, X, y)
+        output = callback_fn(bel_update, bel, X, y)
+        return bel_update, output
 
-
-    def scan(self, bel, y, x):
+    def scan(self, bel, y, x, callback_fn=None):
         D = (x, y)
-        bel, hist = jax.lax.scan(self._step, bel, D)
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        _step = partial(self._step, callback_fn=callback_fn)
+        bel, hist = jax.lax.scan(_step, bel, D)
         return bel, hist
