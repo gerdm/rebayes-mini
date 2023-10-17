@@ -2,6 +2,7 @@ import jax
 import chex
 import jax.numpy as jnp
 from jax.flatten_util import ravel_pytree
+from rebayes_mini import callbacks
 from functools import partial
 
 @chex.dataclass
@@ -37,11 +38,12 @@ class LinearFilter:
         mean = mean_pred + K @ err
         cov = cov_pred - K @ S @ K.T
 
-        bel = bel.replace(mean=mean, cov=cov)
-        return bel
+        bel_update = bel.replace(mean=mean, cov=cov)
+        output = callback_fn(bel_update, bel, y, mean_pred)
+        return bel_update, output
     
 
-    def initialise_active_step(self, y, X):
+    def initialise_active_step(self, y, X, callback_fn):
         """
         Create a step function that makes either
         the observation matrix fixed or part of the 
@@ -49,21 +51,22 @@ class LinearFilter:
         """
         if X.shape[0] != y.shape[0]:
             def _step(bel, y):
-                bel = self.step(bel, y, X)
-                return bel, bel.mean
+                bel, output = self.step(bel, y, X, callback_fn)
+                return bel, output
             xs = y
         else:
             def _step(bel, xs):
                 x, y = xs
-                bel = self.step(bel, y, x)
-                return bel, bel.mean
+                bel, output = self.step(bel, y, x, callback_fn)
+                return bel, output
             xs = (y, X)
         
         return _step, xs
 
     
-    def scan(self, bel, y, X):
-        _step, xs = self.initialise_active_step(y, X)
+    def scan(self, bel, y, X, callback_fn=None):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        _step, xs = self.initialise_active_step(y, X, callback_fn)
         bel, hist = jax.lax.scan(_step, bel, xs)
         return bel, hist
 
