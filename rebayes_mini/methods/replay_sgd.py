@@ -98,12 +98,6 @@ class FifoSGD:
         yhat = self.apply_fn(bel.params, X)
         return yhat
 
-    def predict_state(self, bel):
-        return bel
-
-    def sample_state(self, bel, key, n_samples):
-        return bel
-
     @partial(jax.jit, static_argnums=(0,))
     def _train_step(
         self,
