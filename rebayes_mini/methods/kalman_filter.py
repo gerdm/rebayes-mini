@@ -86,25 +86,23 @@ class ExpfamFilter:
         self.dynamics_covariance = dynamics_covariance
 
     def init_bel(self, params, cov=1.0):
-        self.rfn, self.link_fn = self._initialise_link_fn(self.apply_fn, params)
+        self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
         self.grad_link_fn = jax.jacfwd(self.link_fn)
 
-        flat_params, _ = ravel_pytree(params)
-        nparams = len(flat_params)
-
+        nparams = len(init_params)
         return KFState(
-            mean=flat_params,
+            mean=init_params,
             cov=jnp.eye(nparams) * cov,
         )
 
     def _initialise_link_fn(self, apply_fn, params):
-        _, rfn = ravel_pytree(params)
+        flat_params, rfn = ravel_pytree(params)
 
         @jax.jit
         def link_fn(params, x):
             return apply_fn(rfn(params), x)
 
-        return rfn, link_fn
+        return rfn, link_fn, flat_params
 
     @partial(jax.jit, static_argnums=(0,))
     def mean(self, eta):
