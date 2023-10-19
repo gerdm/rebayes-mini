@@ -6,12 +6,42 @@ from functools import partial
 from rebayes_mini.methods import kalman_filter as kf
 from jax.flatten_util import ravel_pytree
 
+
+def find_key_value_and_path(d, target_key, path=None):
+    if path is None:
+        path = []
+
+    for key, value in d.items():
+        current_path = path + [key]
+
+        if key == target_key:
+            return value, current_path
+        elif isinstance(value, dict):
+            result, result_path = find_key_value_and_path(value, target_key, current_path)
+            if result is not None:
+                return result, result_path
+            
+    return None, None
+
+
+def update_nested_dict(d, keys, new_value):
+    if len(keys) == 1:
+        d[keys[0]] = new_value
+    else:
+        key = keys[0]
+        rest_of_keys = keys[1:]
+
+        if key not in d:
+            d[key] = {}
+
+        update_nested_dict(d[key], rest_of_keys, new_value)
+
+
 def subcify(cls):
     class SubspaceModule(nn.Module):
         dim_in: int
         dim_subspace: int
-        init_normal: Callable = nn.initializers.normal()
-        init_proj: Callable = nn.initializers.normal()
+        init_proj: Callable = nn.initializers.normal(stddev=0.1)
 
         def init(self, rngs, *args, **kwargs):
             r1, r2 = jax.random.split(rngs, 2)
@@ -68,12 +98,11 @@ class SubspaceFilter(kf.ExpfamFilter):
 
     def _initialise_link_fn(self, apply_fn, params):
         params_fixed = params["fixed"]
-        P = params_fixed["P"]
-        P = P / jnp.linalg.norm(P, axis=0) * 2
-        params_fixed["P"] = P
+        P, path = find_key_value_and_path(params_fixed, "P")
+        P = P / jnp.linalg.norm(P, axis=0)
+        update_nested_dict(params_fixed, path, P)
 
         params_train = params["params"]
-
 
         flat_params, rfn = ravel_pytree(params_train)
 
@@ -102,3 +131,20 @@ class BernoulliFilter(SubspaceFilter):
     @partial(jax.jit, static_argnums=(0,))
     def _suff_stat(self, y):
         return y
+
+
+class MultinomialFilter(SubspaceFilter):
+    def __init__(self, apply_fn, dynamics_covariance):
+        super().__init__(
+            apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
+        )
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _log_partition(self, eta):
+        eta = jnp.append(eta, 0.0)
+        return jax.nn.logsumexp(eta).sum()
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _suff_stat(self, y):
+        return y
+
