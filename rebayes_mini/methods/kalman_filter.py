@@ -87,7 +87,7 @@ class ExpfamFilter:
 
     def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
-        self.grad_link_fn = jax.jacfwd(self.link_fn)
+        self.grad_link_fn = jax.jacrev(self.link_fn)
 
         nparams = len(init_params)
         return KFState(
@@ -182,7 +182,7 @@ class MultinomialFilter(ExpfamFilter):
     @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
         eta = jnp.append(eta, 0.0)
-        return jax.nn.logsumexp(eta).sum()
+        return jax.nn.logsumexp(eta).sum() * 2
 
     @partial(jax.jit, static_argnums=(0,))
     def _suff_stat(self, y):
