@@ -16,7 +16,7 @@ class LoFiState:
 class ExpfamFilter(kf.ExpfamFilter):
     def __init__(
         self, apply_fn, log_partition, suff_statistic, dynamics_covariance,
-        rank=10,
+        rank,
     ):
         super().__init__(apply_fn, log_partition, suff_statistic, dynamics_covariance)
         self.rank = rank
@@ -27,7 +27,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         nparams = len(init_params)
 
         low_rank = jnp.zeros((nparams, self.rank))
-        diagonal = jnp.ones(nparams) * cov
+        diagonal = jnp.ones(nparams) / cov # From covariance to precision term
 
         return LoFiState(
             mean=init_params,
@@ -124,14 +124,32 @@ class ExpfamFilter(kf.ExpfamFilter):
 
 
 class BernoulliFilter(ExpfamFilter):
-    def __init__(self, apply_fn, dynamics_covariance):
+    def __init__(self, apply_fn, dynamics_covariance, rank):
         super().__init__(
-            apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
+            apply_fn, self._log_partition, self._suff_stat,
+            dynamics_covariance, rank
         )
 
     @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
         return jnp.log1p(jnp.exp(eta)).sum()
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _suff_stat(self, y):
+        return y
+
+
+class MultinomialFilter(ExpfamFilter):
+    def __init__(self, apply_fn, dynamics_covariance, rank):
+        super().__init__(
+            apply_fn, self._log_partition, self._suff_stat,
+            dynamics_covariance, rank
+        )
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _log_partition(self, eta):
+        eta = jnp.append(eta, 0.0)
+        return jax.nn.logsumexp(eta).sum()
 
     @partial(jax.jit, static_argnums=(0,))
     def _suff_stat(self, y):
