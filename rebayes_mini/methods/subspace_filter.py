@@ -51,7 +51,8 @@ def subcify(cls):
 
         def setup(self):
             key_dummy = jax.random.PRNGKey(0)
-            params = cls().init(key_dummy, jnp.ones((1, self.dim_in)))
+            vinit = (1, self.dim_in) if isinstance(self.dim_in, int) else (1, *self.dim_in)
+            params = cls().init(key_dummy, jnp.ones(vinit))
             params_all, reconstruct_fn = ravel_pytree(params)
 
             self.dim_full = len(params_all)
