@@ -23,7 +23,7 @@ class ExpfamFilter(kf.ExpfamFilter):
     
     def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
-        self.grad_link_fn = jax.jacfwd(self.link_fn)
+        self.grad_link_fn = jax.jacrev(self.link_fn)
         nparams = len(init_params)
 
         low_rank = jnp.zeros((nparams, self.rank))
@@ -72,7 +72,7 @@ class ExpfamFilter(kf.ExpfamFilter):
 
         # Obtain additive term for diagonal
         lr_drop = jnp.einsum("Dd,d->Dd", singular_vectors_drop, singular_values_drop)
-        diag_drop = jnp.einsum("ij,ji->i", lr_drop, lr_drop)
+        diag_drop = jnp.einsum("ij,ij->i", lr_drop, lr_drop)
 
         return low_rank_new, diag_drop
                 
@@ -86,9 +86,11 @@ class ExpfamFilter(kf.ExpfamFilter):
         Ht = self.grad_link_fn(bel_pred.mean, x)
 
         At = jnp.linalg.inv(jnp.linalg.cholesky(Rt))
-        low_rank_hat = jnp.c_[bel_pred.low_rank, Ht.T @ At.T]
+        memory_entry = Ht.T @ At.T
+        _, n_out = memory_entry.shape
+        low_rank_hat = jnp.c_[bel_pred.low_rank, memory_entry]
         Gt = jnp.linalg.pinv(
-            jnp.eye(self.rank + 1) + 
+            jnp.eye(self.rank + n_out) + 
             jnp.einsum("ji,j,jk->ik", low_rank_hat, bel_pred.diagonal, low_rank_hat)
         )
         Ct = Ht.T @ At.T @ At
