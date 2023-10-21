@@ -44,10 +44,11 @@ class ExpfamFilter(kf.ExpfamFilter):
             state.low_rank, diag_pred, 1 / state.diagonal, state.low_rank
         )
         C = jnp.linalg.inv(I_lr + self.dynamics_covariance * C)
+        cholC = jnp.linalg.cholesky(C)
 
         low_rank_pred = jnp.einsum(
             "i,i,ij,jk->ik",
-            diag_pred, 1 / state.diagonal, state.low_rank, C
+            diag_pred, 1 / state.diagonal, state.low_rank, cholC
         )
 
         state_pred = state.replace(
@@ -71,12 +72,12 @@ class ExpfamFilter(kf.ExpfamFilter):
 
         # Obtain additive term for diagonal
         lr_drop = jnp.einsum("Dd,d->Dd", singular_vectors_drop, singular_values_drop)
-        diag_drop = jnp.einsum("ij,ij->i", lr_drop, lr_drop)
+        diag_drop = jnp.einsum("ij,ji->i", lr_drop, lr_drop)
 
         return low_rank_new, diag_drop
                 
 
-    @partial(jax.jit, static_argnums=(0,))
+    # @partial(jax.jit, static_argnums=(0,))
     def _update(self, bel_pred, x, y):
         eta = self.link_fn(bel_pred.mean, x).astype(float)
         yhat = self.mean(eta)
@@ -86,17 +87,18 @@ class ExpfamFilter(kf.ExpfamFilter):
 
         At = jnp.linalg.inv(jnp.linalg.cholesky(Rt))
         low_rank_hat = jnp.c_[bel_pred.low_rank, Ht.T @ At.T]
-        Gt = jnp.linalg.inv(
-            jnp.eye(self.rank + 1) + low_rank_hat.T @ low_rank_hat / self.dynamics_covariance
+        Gt = jnp.linalg.pinv(
+            jnp.eye(self.rank + 1) + 
+            jnp.einsum("ji,j,jk->ik", low_rank_hat, bel_pred.diagonal, low_rank_hat)
         )
         Ct = Ht.T @ At.T @ At
 
         # Kalman gain
         K1 = jnp.einsum("i,ij->ij", 1 / bel_pred.diagonal, Ct)
         K2 = jnp.einsum(
-            "i,ij,jk,lk,l,lm->im",
-            1 / bel_pred.diagonal, low_rank_hat, Gt,
-            low_rank_hat, 1 / bel_pred.diagonal, Ct
+            "i,ij,jk,lk,lm->im",
+            1 / bel_pred.diagonal ** 2, low_rank_hat, Gt,
+            low_rank_hat, Ct
         )
         Kt = K1 - K2
         
