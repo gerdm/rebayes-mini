@@ -7,6 +7,7 @@ arXiv preprint arXiv:1703.02428 (2017).
 import jax
 import chex
 import jax.numpy as jnp
+from rebayes_mini.methods import kalman_filter as kf
 
 @chex.dataclass
 class StudentTState:
@@ -15,7 +16,7 @@ class StudentTState:
     dof: chex.Array
 
 
-class LinearFilter:
+class LinearFilter(kf.LinearFilter):
     """
     """
     def __init__(
@@ -47,7 +48,6 @@ class LinearFilter:
         )
         return state_pred
 
-
     def update_step(self, bel, y, obs_matrix):
         yhat = obs_matrix @ bel.mean
         S = obs_matrix @ bel.scale @ obs_matrix.T + self.observation_covariance
@@ -71,4 +71,9 @@ class LinearFilter:
         return state_new
 
     def step(self, bel, y, obs_matrix, callback_fn):
-        ...
+        bel_pred = self.predict_step(bel)
+        bel_update = self.update_step(bel_pred, y, obs_matrix)
+
+        output = callback_fn(bel_update, bel_pred, y, obs_matrix)
+        return bel_update, output
+    
