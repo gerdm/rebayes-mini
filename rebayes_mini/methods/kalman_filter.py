@@ -14,10 +14,10 @@ class KFState:
 
 class LinearFilter:
     def __init__(
-        self, transition_matrix, transition_covariance, observation_covariance,
+        self, transition_matrix, dynamics_covariance, observation_covariance,
     ):
         self.transition_matrix = transition_matrix
-        self.transition_covariance = transition_covariance
+        self.dynamics_covariance = dynamics_covariance
         self.observation_covariance = observation_covariance
     
     def init_bel(self, mean, cov=1.0):
@@ -29,7 +29,7 @@ class LinearFilter:
     def step(self, bel, y, obs_matrix, callback_fn):
         # Predict step
         mean_pred = self.transition_matrix @ bel.mean
-        cov_pred = self.transition_matrix @ bel.cov @ self.transition_matrix.T + self.transition_covariance
+        cov_pred = self.transition_matrix @ bel.cov @ self.transition_matrix.T + self.dynamics_covariance
 
         # Update step
         err = y - obs_matrix @ mean_pred
