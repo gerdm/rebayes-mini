@@ -20,11 +20,11 @@ class LinearFilter(kf.LinearFilter):
     """
     """
     def __init__(
-        self, transition_matrix, transition_covariance, observation_covariance,
+        self, transition_matrix, dynamics_covariance, observation_covariance,
         dof_latent, dof_observed,
     ):
         self.transition_matrix = transition_matrix
-        self.transition_covariance = transition_covariance
+        self.dynamics_covariance = dynamics_covariance
         self.observation_covariance = observation_covariance
         self.dof_latent = dof_latent
         self.dof_observed = dof_observed
@@ -37,8 +37,8 @@ class LinearFilter(kf.LinearFilter):
         )
     
     def predict_step(self, bel):
-        mean_pred = self.transition_covariance @ bel.mean
-        cov_pred = self.transition_matrix @ bel.scale @ self.transition_matrix.T + self.transition_covariance
+        mean_pred = self.transition_matrix @ bel.mean
+        cov_pred = self.transition_matrix @ bel.scale @ self.transition_matrix.T + self.dynamics_covariance
         dof_pred = jnp.minimum(bel.dof, self.dof_latent)
 
         state_pred = StudentTState(
