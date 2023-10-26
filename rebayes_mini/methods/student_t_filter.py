@@ -58,7 +58,7 @@ class LinearFilter(kf.LinearFilter):
         mean_new = bel.mean + K @ err
         dof_prime = jnp.minimum(bel.dof, self.dof_observed)
         scale_new_prime = bel.scale - K @ S @ K.T
-        dof_new = bel.dof + len(y)
+        dof_new = dof_prime + len(y)
         scale_new = (
             dof_prime + err.T @ Sinv @ err
         ) / dof_new * scale_new_prime
