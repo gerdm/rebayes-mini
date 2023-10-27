@@ -125,7 +125,8 @@ class ExpfamFilter:
         Rt = self.covariance(eta)
 
         Ht = self.grad_link_fn(pmean_pred, xt)
-        Kt = jnp.linalg.solve(Ht @ pcov_pred @ Ht.T + Rt, Ht @ pcov_pred).T
+        St = Ht @ pcov_pred @ Ht.T + Rt
+        Kt = jnp.linalg.solve(St, Ht @ pcov_pred).T
 
         pcov = (I - Kt @ Ht) @ pcov_pred
         pmean = pmean_pred + (Kt @ err).squeeze()
