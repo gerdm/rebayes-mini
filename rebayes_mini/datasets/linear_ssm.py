@@ -79,7 +79,7 @@ class StudentT1D:
         return output
 
 
-class StMovingObject2D:
+class GaussStMovingObject2D:
     def __init__(
         self, sampling_period, dynamics_covariance, observation_covariance, dof_observed,
     ):
@@ -143,3 +143,38 @@ class StMovingObject2D:
         keys = jax.random.split(key, n_steps)
         _, output = jax.lax.scan(self.step, z0, keys)
         return output
+
+
+class StStMovingObject2D(GaussStMovingObject2D):
+    def __init__(
+        self, sampling_period, dynamics_covariance, observation_covariance,
+        dof_observed, dof_latent
+    ):
+        super().__init__(
+            sampling_period, dynamics_covariance, observation_covariance, dof_observed
+        )
+        self.dof_latent = dof_latent
+    
+    def step(self, z_prev, key):
+        key_latent, key_obs = jax.random.split(key, 2)
+        z_next = self.sample_multivariate_t(
+            key_latent,
+            mean=self.transition_matrix @ z_prev,
+            covariance=self.dynamics_covariance,
+            df=self.dof_latent,
+        )
+
+        x_next = self.sample_multivariate_t(
+            key_obs,
+            mean=self.projection_matrix @ z_next,
+            covariance=self.observation_covariance,
+            df=self.dof_observed,
+        )
+
+        output = {
+            "observed": x_next,
+            "latent": z_next,
+        }
+
+        return z_next, output
+    
