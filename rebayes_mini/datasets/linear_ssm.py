@@ -77,3 +77,70 @@ class StudentT1D:
         keys = jax.random.split(key, n_steps)
         _, output = jax.lax.scan(self.step, z0, keys)
         return output
+
+
+class StMovingObject2D:
+    def __init__(
+        self, sampling_period, dynamics_covariance, observation_covariance, dof_observed,
+    ):
+        self.sampling_period = sampling_period
+        self.dynamics_covariance = dynamics_covariance * jnp.eye(4)
+        self.observation_covariance = observation_covariance * jnp.eye(2)
+        self.A = jnp.linalg.cholesky(self.observation_covariance)
+        self.transition_matrix, self.projection_matrix = self._init_dynamics(sampling_period)
+        self.dof_observed = dof_observed
+        self.dim_obs, self.dim_latent = self.projection_matrix.shape
+    
+    def _init_dynamics(self, sampling_period):
+        transition_matrix = jnp.array([
+            [1, 0, sampling_period, 0],
+            [0, 1, 0, sampling_period],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+        ])
+
+        projection_matrix = jnp.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+        ])
+
+        return transition_matrix, projection_matrix
+
+    def sample_multivariate_t(self, key, mean, scale, df):
+        """
+        See: https://journal.r-project.org/archive/2013/RJ-2013-033/RJ-2013-033.pdf
+        """
+        key_chi, key_norm = jax.random.split(key)
+        dim = len(mean)
+        z = jax.random.normal(key_norm, shape=(dim,))
+        W = df / jax.random.chisquare(key_chi, df=df)
+
+        x = mean + scale @ z * jnp.sqrt(W)
+        return x
+
+    def step(self, z_prev, key):
+        key_latent, key_obs = jax.random.split(key, 2)
+        z_next = jax.random.multivariate_normal(
+            key_latent,
+            mean=self.transition_matrix @ z_prev,
+            cov=self.dynamics_covariance,
+        )
+
+        x_next = self.sample_multivariate_t(
+            key_obs,
+            mean=self.projection_matrix @ z_next,
+            scale=self.A,
+            df=self.dof_observed,
+        )
+
+        output = {
+            "observed": x_next,
+            "latent": z_next,
+        }
+
+        return z_next, output
+    
+    def sample(self, key, z0, n_steps):
+        keys = jax.random.split(key, n_steps)
+        _, output = jax.lax.scan(self.step, z0, keys)
+        return output
