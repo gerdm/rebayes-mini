@@ -17,7 +17,7 @@ class WSMFilter:
     """
     def __init__(
         self, apply_fn, suff_stat, log_base_measure, dynamics_covariance,
-        weighting_function,
+        weighting_function, transition_matrix=None,
     ):
         self.apply_fn = apply_fn
         self.suff_stat = suff_stat
@@ -26,6 +26,7 @@ class WSMFilter:
         self.weighting_function = weighting_function
         self.log_base_measure = log_base_measure
         self.grad_log_base_measure = jax.grad(log_base_measure)
+        self.transition_matrix = transition_matrix
         
 
     def init_bel(self, params, cov=1.0):
@@ -35,6 +36,9 @@ class WSMFilter:
 
         flat_params, _ = ravel_pytree(params)
         nparams = len(flat_params)
+
+        if self.transition_matrix is None:
+            self.transition_matrix = jnp.eye(nparams)
 
         return GBState(
             mean=flat_params,
@@ -96,9 +100,9 @@ class WSMFilter:
     
     def step(self, bel, D, learning_rate, callback_fn):
         y, x = D
-        hat_cov = bel.covariance + self.dynamics_covariance
+        hat_cov = self.transition_matrix @ bel.covariance @ self.transition_matrix.T + self.dynamics_covariance
         hat_prec = jnp.linalg.inv(hat_cov)
-        hat_mean = bel.mean
+        hat_mean = self.transition_matrix @ bel.mean
         
         Lambda = self.Lambda(y, hat_mean, x)
         nu = self.nu(y, hat_mean, x)
@@ -115,9 +119,9 @@ class WSMFilter:
         return bel_update, output
     
     
-    def scan(self, bel, y, x=None, learning_rate=1.0, callback=None):
+    def scan(self, bel, y, x=None, learning_rate=1.0, callback_fn=None):
         D = (y, x)
-        callback = callbacks.get_null if callback is None else callback
-        _step = partial(self.step, learning_rate=learning_rate, callback_fn=callback)
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        _step = partial(self.step, learning_rate=learning_rate, callback_fn=callback_fn)
         bel, hist = jax.lax.scan(_step, bel, D)
         return bel, hist
