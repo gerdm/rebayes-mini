@@ -86,7 +86,6 @@ class StMovingObject2D:
         self.sampling_period = sampling_period
         self.dynamics_covariance = dynamics_covariance * jnp.eye(4)
         self.observation_covariance = observation_covariance * jnp.eye(2)
-        self.A = jnp.linalg.cholesky(self.observation_covariance)
         self.transition_matrix, self.projection_matrix = self._init_dynamics(sampling_period)
         self.dof_observed = dof_observed
         self.dim_obs, self.dim_latent = self.projection_matrix.shape
@@ -106,16 +105,16 @@ class StMovingObject2D:
 
         return transition_matrix, projection_matrix
 
-    def sample_multivariate_t(self, key, mean, scale, df):
-        """
-        See: https://journal.r-project.org/archive/2013/RJ-2013-033/RJ-2013-033.pdf
-        """
-        key_chi, key_norm = jax.random.split(key)
+    def sample_multivariate_t(self, key, mean, covariance, df):
+        key_gamma, key_norm = jax.random.split(key)
         dim = len(mean)
-        z = jax.random.normal(key_norm, shape=(dim,))
-        W = df / jax.random.chisquare(key_chi, df=df)
+        zeros = jnp.zeros(dim)
+        err = jax.random.multivariate_normal(key_norm, mean=zeros, cov=covariance)
+        shape, rate = df / 2, df / 2
+        w  = jax.random.gamma(key_gamma, shape=(1,), a=shape) / rate
 
-        x = mean + scale @ z * jnp.sqrt(W)
+        x = mean + err / jnp.sqrt(w)
+
         return x
 
     def step(self, z_prev, key):
@@ -129,7 +128,7 @@ class StMovingObject2D:
         x_next = self.sample_multivariate_t(
             key_obs,
             mean=self.projection_matrix @ z_next,
-            scale=self.A,
+            covariance=self.observation_covariance,
             df=self.dof_observed,
         )
 
