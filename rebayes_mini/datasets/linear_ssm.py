@@ -80,6 +80,11 @@ class StudentT1D:
 
 
 class GaussStMovingObject2D:
+    """
+    Tracking object moving in 2D space with constant velocity.
+    The latent space is taken to be Gaussian and
+    the observed space is taken to be Student's t.
+    """
     def __init__(
         self, sampling_period, dynamics_covariance, observation_covariance, dof_observed,
     ):
@@ -146,6 +151,11 @@ class GaussStMovingObject2D:
 
 
 class StStMovingObject2D(GaussStMovingObject2D):
+    """
+    Tracking object moving in 2D space with constant velocity.
+    The latent space is taken to be Student's t and
+    the observed space is taken to be Student's t.
+    """
     def __init__(
         self, sampling_period, dynamics_covariance, observation_covariance,
         dof_observed, dof_latent
