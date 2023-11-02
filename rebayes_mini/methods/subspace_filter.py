@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import flax.linen as nn
 from typing import Callable
 from functools import partial
-from rebayes_mini.methods import kalman_filter as kf
+from rebayes_mini.methods import gauss_filter as kf
 from jax.flatten_util import ravel_pytree
 
 

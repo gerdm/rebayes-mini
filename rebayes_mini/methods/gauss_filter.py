@@ -12,7 +12,7 @@ class KFState:
     cov: chex.Array
 
 
-class LinearFilter:
+class KalmanFilter:
     def __init__(
         self, transition_matrix, dynamics_covariance, observation_covariance,
     ):
@@ -70,6 +70,15 @@ class LinearFilter:
         bel, hist = jax.lax.scan(_step, bel, xs)
         return bel, hist
 
+
+
+class RobustKalmanFilter:
+    """
+    See:
+    G. Agamennoni, J. I. Nieto and E. M. Nebot, "Approximate Inference in State-Space Models With Heavy-Tailed Noise,"
+    in IEEE Transactions on Signal Processing, vol. 60, no. 10, pp. 5024-5037, Oct. 2012, doi: 10.1109/TSP.2012.2208106.
+    """
+    ...
 
 
 class ExpfamFilter:

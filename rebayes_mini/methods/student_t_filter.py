@@ -9,7 +9,7 @@ import chex
 import jax.numpy as jnp
 from functools import partial
 from rebayes_mini import callbacks
-from rebayes_mini.methods import kalman_filter as kf
+from rebayes_mini.methods import gauss_filter as kf
 
 @chex.dataclass
 class StudentTState:
@@ -18,7 +18,7 @@ class StudentTState:
     dof: chex.Array
 
 
-class LinearFilter(kf.LinearFilter):
+class LinearFilter(kf.KalmanFilter):
     """
     """
     def __init__(

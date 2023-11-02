@@ -2,8 +2,7 @@ import jax
 import chex
 import jax.numpy as jnp
 from functools import partial
-from jax.flatten_util import ravel_pytree
-from rebayes_mini.methods import kalman_filter as kf
+from rebayes_mini.methods import gauss_filter as kf
 
 @chex.dataclass
 class LoFiState:
