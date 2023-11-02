@@ -72,13 +72,46 @@ class KalmanFilter:
 
 
 
-class RobustKalmanFilter:
+class RobustKalmanFilter(KalmanFilter):
     """
     See:
     G. Agamennoni, J. I. Nieto and E. M. Nebot, "Approximate Inference in State-Space Models With Heavy-Tailed Noise,"
     in IEEE Transactions on Signal Processing, vol. 60, no. 10, pp. 5024-5037, Oct. 2012, doi: 10.1109/TSP.2012.2208106.
     """
-    ...
+    def __init__(
+        self, transition_matrix, dynamics_covariance, prior_observation_covariance, n_inner,
+        noise_scaling
+    ):
+        super().__init__(transition_matrix, dynamics_covariance, prior_observation_covariance)
+        self.n_inner = n_inner
+        self.noise_scaling = noise_scaling
+
+    def _predict(self, bel):
+        mean_update = self.transition_matrix @ bel.mean
+        cov_update = self.transition_matrix @ bel.cov @ self.transition_matrix.T + self.dynamics_covariance
+        bel_predict = bel.replace(mean=mean_update, cov=cov_update)
+        return bel_predict
+
+    def _update(self, _, bel, bel_pred, x, y):
+        I = jnp.eye(len(bel.mean))
+        S = (y - x @ bel.mean) @ (y - x @ bel.mean).T + x @ bel.cov @ x.T
+        Lambda = (self.noise_scaling * self.observation_covariance + S) / (self.noise_scaling + 1)
+
+        Kt = jnp.linalg.solve(x @ bel_pred.cov @ x.T + Lambda, x @ bel_pred.cov)
+        mean_new = bel_pred.mean + Kt.T @ (y - x @ bel_pred.mean)
+        cov_new = Kt.T @ Lambda @ Kt + (I - x @ Kt).T @ bel_pred.cov @ (I - x @ Kt)
+
+        bel = bel.replace(mean=mean_new, cov=cov_new)
+        return bel
+
+    def step(self, bel, y, x, callback_fn):
+        bel_pred = self._predict(bel)
+        partial_update = partial(self._update, bel_pred=bel_pred, x=x, y=y)
+        bel_update = jax.lax.fori_loop(0, self.n_inner, partial_update, bel_pred)
+        output = callback_fn(bel_update, bel_pred, y, x)
+
+        return bel_update, output
+
 
 
 class ExpfamFilter:
