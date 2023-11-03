@@ -99,7 +99,7 @@ class RobustKalmanFilter(KalmanFilter):
 
         Kt = jnp.linalg.solve(x @ bel_pred.cov @ x.T + Lambda, x @ bel_pred.cov)
         mean_new = bel_pred.mean + Kt.T @ (y - x @ bel_pred.mean)
-        cov_new = Kt.T @ Lambda @ Kt + (I - x @ Kt).T @ bel_pred.cov @ (I - x @ Kt)
+        cov_new = Kt.T @ Lambda @ Kt + (I - x.T @ Kt).T @ bel_pred.cov @ (I - x.T @ Kt)
 
         bel = bel.replace(mean=mean_new, cov=cov_new)
         return bel
