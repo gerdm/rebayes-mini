@@ -152,7 +152,7 @@ class IMQFilter:
         nparams = len(init_params)
         return GBState(
             mean=init_params,
-            cov=jnp.eye(nparams) * cov,
+            covariance=jnp.eye(nparams) * cov,
         )
 
     def _initialise_link_fn(self, apply_fn, params):
