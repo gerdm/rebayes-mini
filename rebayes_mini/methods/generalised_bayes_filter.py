@@ -192,7 +192,7 @@ class IMQFilter:
         pcov = (I - Kt @ Ht) @ pcov_pred
         pmean = pmean_pred + weighting_term * (Kt @ err).squeeze()
 
-        bel_new = bel.replace(mean=pmean, cov=pcov)
+        bel_new = bel.replace(mean=pmean, covariance=pcov)
         output = callback_fn(bel_new, bel, xt, yt)
         return bel_new, output
 
