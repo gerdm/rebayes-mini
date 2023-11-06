@@ -125,3 +125,88 @@ class WSMFilter:
         _step = partial(self.step, learning_rate=learning_rate, callback_fn=callback_fn)
         bel, hist = jax.lax.scan(_step, bel, D)
         return bel, hist
+
+
+class IMQFilter:
+    """
+    Matt's Inverse-Multi-Quadratic filter
+    for a Gaussian state space model with 
+    known observation covariance
+    """
+    def __init__(
+        self, apply_fn, dynamics_covariance, variance, soft_threshold,
+    ):
+        """
+        apply_fn: function
+            Maps state and observation to the natural parameters
+        """
+        self.apply_fn = apply_fn
+        self.dynamics_covariance = dynamics_covariance
+        self.variance = variance
+        self.soft_threshold = soft_threshold
+
+    def init_bel(self, params, cov=1.0):
+        self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
+        self.grad_link_fn = jax.jacrev(self.link_fn)
+
+        nparams = len(init_params)
+        return GBState(
+            mean=init_params,
+            cov=jnp.eye(nparams) * cov,
+        )
+
+    def _initialise_link_fn(self, apply_fn, params):
+        flat_params, rfn = ravel_pytree(params)
+
+        @jax.jit
+        def link_fn(params, x):
+            return apply_fn(rfn(params), x)
+
+        return rfn, link_fn, flat_params
+
+    @partial(jax.jit, static_argnums=(0,))
+    def mean(self, eta):
+        return jax.grad(self.log_partition)(eta)
+
+    @partial(jax.jit, static_argnums=(0,))
+    def covariance(self, eta):
+        return jax.hessian(self.log_partition)(eta).squeeze()
+
+    def step(self, bel, xs, callback_fn):
+        xt, yt = xs
+        pmean_pred = bel.mean
+        nparams = len(pmean_pred)
+        I = jnp.eye(nparams)
+        pcov_pred = bel.cov + self.dynamics_covariance * I
+
+        eta = self.link_fn(bel.mean, xt).astype(float)
+        yhat = self.mean(eta)
+        err = self.suff_statistic(yt) - yhat
+        Rt = self.covariance(eta)
+        weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
+
+        Ht = self.grad_link_fn(pmean_pred, xt)
+        St = Ht @ pcov_pred @ Ht.T + Rt / weighting_term
+        Kt = jnp.linalg.solve(St, Ht @ pcov_pred).T
+
+        pcov = (I - Kt @ Ht) @ pcov_pred
+        pmean = pmean_pred + weighting_term * (Kt @ err).squeeze()
+
+        bel_new = bel.replace(mean=pmean, cov=pcov)
+        output = callback_fn(bel_new, bel, xt, yt)
+        return bel_new, output
+
+    def scan(self, bel, y, X, callback=None):
+        xs = (X, y)
+        callback = callbacks.get_null if callback is None else callback
+        _step = partial(self.step, callback_fn=callback)
+        bels, hist = jax.lax.scan(_step, bel, xs)
+        return bels, hist
+
+    @partial(jax.jit, static_argnums=(0,))
+    def log_partition(self, eta):
+        return (eta ** 2 / 2).sum()
+
+    @partial(jax.jit, static_argnums=(0,))
+    def suff_stat(self, y):
+        return y / jnp.sqrt(self.variance)
