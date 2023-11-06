@@ -208,5 +208,5 @@ class IMQFilter:
         return (eta ** 2 / 2).sum()
 
     @partial(jax.jit, static_argnums=(0,))
-    def suff_stat(self, y):
+    def suff_statistic(self, y):
         return y / jnp.sqrt(self.variance)
