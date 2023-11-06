@@ -177,7 +177,7 @@ class IMQFilter:
         pmean_pred = bel.mean
         nparams = len(pmean_pred)
         I = jnp.eye(nparams)
-        pcov_pred = bel.cov + self.dynamics_covariance * I
+        pcov_pred = bel.covariance + self.dynamics_covariance * I
 
         eta = self.link_fn(bel.mean, xt).astype(float)
         yhat = self.mean(eta)
