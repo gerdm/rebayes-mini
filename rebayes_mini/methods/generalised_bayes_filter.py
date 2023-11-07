@@ -30,9 +30,9 @@ class WSMFilter:
         
 
     def init_bel(self, params, cov=1.0):
-        self.rfn, self.link = self._initialise_link_fn(self.apply_fn, params)
-        self.grad_link = jax.jacrev(self.link)
-        self.m = partial(self.weighting_function, linkfn=self.link)
+        self.rfn, self.link_fn = self._initialise_link_fn(self.apply_fn, params)
+        self.grad_link = jax.jacrev(self.link_fn)
+        self.m = partial(self.weighting_function, linkfn=self.link_fn)
 
         flat_params, _ = ravel_pytree(params)
         nparams = len(flat_params)
@@ -58,7 +58,7 @@ class WSMFilter:
 
     def C(self, y, m, x):
         # Output: (P,)
-        correction = self.link(m, x) - self.grad_link(m, x) @ m
+        correction = self.link_fn(m, x) - self.grad_link(m, x) @ m
         return self.grad_sstat(y).T @ correction  + self.grad_log_base_measure(y)
 
 
@@ -168,10 +168,6 @@ class IMQFilter:
     def mean(self, eta):
         return jax.grad(self.log_partition)(eta)
 
-    @partial(jax.jit, static_argnums=(0,))
-    def covariance(self, eta):
-        return jax.hessian(self.log_partition)(eta).squeeze()
-
     def step(self, bel, xs, callback_fn):
         xt, yt = xs
         pmean_pred = bel.mean
@@ -181,8 +177,11 @@ class IMQFilter:
 
         eta = self.link_fn(bel.mean, xt).astype(float)
         yhat = self.mean(eta)
-        err = self.suff_statistic(yt) - yhat
-        Rt = self.covariance(eta)
+        # err = self.suff_statistic(yt) - yhat
+        err = yt - yhat
+        # Rt = self.covariance(eta)
+        # Rt = jnp.eye(len(yt)) * self.variance
+        Rt = self.variance
         weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
 
         Ht = self.grad_link_fn(pmean_pred, xt)
@@ -196,10 +195,10 @@ class IMQFilter:
         output = callback_fn(bel_new, bel, xt, yt)
         return bel_new, output
 
-    def scan(self, bel, y, X, callback=None):
+    def scan(self, bel, y, X, callback_fn=None):
         xs = (X, y)
-        callback = callbacks.get_null if callback is None else callback
-        _step = partial(self.step, callback_fn=callback)
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        _step = partial(self.step, callback_fn=callback_fn)
         bels, hist = jax.lax.scan(_step, bel, xs)
         return bels, hist
 
