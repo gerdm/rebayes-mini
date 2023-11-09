@@ -134,7 +134,8 @@ class IMQFilter:
     known observation covariance
     """
     def __init__(
-        self, apply_fn, dynamics_covariance, variance, soft_threshold,
+        self, apply_fn, dynamics_covariance, observation_covariance, soft_threshold,
+        transition_matrix=None,
     ):
         """
         apply_fn: function
@@ -142,14 +143,18 @@ class IMQFilter:
         """
         self.apply_fn = apply_fn
         self.dynamics_covariance = dynamics_covariance
-        self.variance = variance
+        self.observation_covariance = observation_covariance
         self.soft_threshold = soft_threshold
+        self.transition_matrix = transition_matrix
 
     def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
         self.grad_link_fn = jax.jacrev(self.link_fn)
 
         nparams = len(init_params)
+        if self.transition_matrix is None:
+            self.transition_matrix = jnp.eye(nparams)
+
         return GBState(
             mean=init_params,
             covariance=jnp.eye(nparams) * cov,
@@ -164,32 +169,22 @@ class IMQFilter:
 
         return rfn, link_fn, flat_params
 
-    @partial(jax.jit, static_argnums=(0,))
-    def mean(self, eta):
-        return jax.grad(self.log_partition)(eta)
-
     def step(self, bel, xs, callback_fn):
         xt, yt = xs
-        pmean_pred = bel.mean
-        nparams = len(pmean_pred)
-        I = jnp.eye(nparams)
-        pcov_pred = bel.covariance + self.dynamics_covariance * I
+        pmean_pred = self.transition_matrix @ bel.mean
+        pcov_pred = self.transition_matrix @ bel.covariance @ self.transition_matrix.T + self.dynamics_covariance
 
-        eta = self.link_fn(bel.mean, xt).astype(float)
-        yhat = self.mean(eta)
-        # err = self.suff_statistic(yt) - yhat
+        yhat = self.link_fn(pmean_pred, xt)
         err = yt - yhat
-        # Rt = self.covariance(eta)
-        # Rt = jnp.eye(len(yt)) * self.variance
-        Rt = self.variance
+        Rt = self.observation_covariance
         weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
 
         Ht = self.grad_link_fn(pmean_pred, xt)
         St = Ht @ pcov_pred @ Ht.T + Rt / weighting_term
         Kt = jnp.linalg.solve(St, Ht @ pcov_pred).T
 
-        pcov = (I - Kt @ Ht) @ pcov_pred
-        pmean = pmean_pred + weighting_term * (Kt @ err).squeeze()
+        pmean = pmean_pred + weighting_term * Kt @ err
+        pcov = pcov_pred - Kt @ St @ Kt.T
 
         bel_new = bel.replace(mean=pmean, covariance=pcov)
         output = callback_fn(bel_new, bel, xt, yt)
@@ -201,11 +196,3 @@ class IMQFilter:
         _step = partial(self.step, callback_fn=callback_fn)
         bels, hist = jax.lax.scan(_step, bel, xs)
         return bels, hist
-
-    @partial(jax.jit, static_argnums=(0,))
-    def log_partition(self, eta):
-        return (eta ** 2 / 2).sum()
-
-    @partial(jax.jit, static_argnums=(0,))
-    def suff_statistic(self, y):
-        return y / jnp.sqrt(self.variance)
