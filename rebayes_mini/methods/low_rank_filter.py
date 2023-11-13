@@ -76,7 +76,6 @@ class ExpfamFilter(kf.ExpfamFilter):
         return low_rank_new, diag_drop
                 
 
-    # @partial(jax.jit, static_argnums=(0,))
     def _update(self, bel_pred, x, y):
         eta = self.link_fn(bel_pred.mean, x).astype(float)
         yhat = self.mean(eta)
@@ -146,11 +145,19 @@ class MultinomialFilter(ExpfamFilter):
             apply_fn, self._log_partition, self._suff_stat,
             dynamics_covariance, rank
         )
+    
+    def mean(self, eta):
+        return eta
+    
+    # def covariance(self, eta):
+    #     mean = self.mean(eta)
+    #     return jnp.diag(mean) - jnp.outer(mean, mean) + 1e-6 * jnp.eye(len(mean))
 
     @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
         eta = jnp.append(eta, 0.0)
-        return jax.nn.logsumexp(eta).sum()
+        Z =  jax.nn.logsumexp(eta)
+        return Z.sum()
 
     @partial(jax.jit, static_argnums=(0,))
     def _suff_stat(self, y):
