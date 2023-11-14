@@ -61,8 +61,8 @@ class ExpfamFilter(kf.ExpfamFilter):
     def _update_dlr(self, low_rank_hat):
         singular_vectors, singular_values, _ = jnp.linalg.svd(low_rank_hat, full_matrices=False)
 
-        singular_vectors_drop = singular_vectors[:, self.rank:] # Ut
-        singular_values_drop = singular_values[self.rank:] # Λt
+        # singular_vectors_drop = singular_vectors[:, self.rank:] # Ut
+        # singular_values_drop = singular_values[self.rank:] # Λt
 
         # Update new low rank
         singular_vectors = singular_vectors[:, :self.rank] # Ut
@@ -70,8 +70,9 @@ class ExpfamFilter(kf.ExpfamFilter):
         low_rank_new = jnp.einsum("Dd,d->Dd", singular_vectors, singular_values)
 
         # Obtain additive term for diagonal
-        lr_drop = jnp.einsum("Dd,d->Dd", singular_vectors_drop, singular_values_drop)
-        diag_drop = jnp.einsum("ij,ij->i", lr_drop, lr_drop)
+        # lr_drop = jnp.einsum("Dd,d->Dd", singular_vectors_drop, singular_values_drop)
+        # diag_drop = jnp.einsum("ij,ij->i", lr_drop, lr_drop)
+        diag_drop = jnp.einsum("Dd,Dd->D", low_rank_hat, low_rank_hat)
 
         return low_rank_new, diag_drop
                 
@@ -81,12 +82,13 @@ class ExpfamFilter(kf.ExpfamFilter):
         yhat = self.mean(eta)
         yobs = self.suff_statistic(y)
         Rt = jnp.atleast_2d(self.covariance(eta))
-        Ht = self.grad_link_fn(bel_pred.mean, x)
+        Ht = Rt @ self.grad_link_fn(bel_pred.mean, x)
 
         At = jnp.linalg.inv(jnp.linalg.cholesky(Rt))
         memory_entry = Ht.T @ At.T
         _, n_out = memory_entry.shape
-        low_rank_hat = jnp.c_[bel_pred.low_rank, memory_entry]
+
+        low_rank_hat = jnp.concatenate([bel_pred.low_rank, memory_entry], axis=1)
         Gt = jnp.linalg.pinv(
             jnp.eye(self.rank + n_out) + 
             jnp.einsum("ji,j,jk->ik", low_rank_hat, bel_pred.diagonal, low_rank_hat)
@@ -146,13 +148,6 @@ class MultinomialFilter(ExpfamFilter):
             dynamics_covariance, rank
         )
     
-    def mean(self, eta):
-        return eta
-    
-    # def covariance(self, eta):
-    #     mean = self.mean(eta)
-    #     return jnp.diag(mean) - jnp.outer(mean, mean) + 1e-6 * jnp.eye(len(mean))
-
     @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
         eta = jnp.append(eta, 0.0)
