@@ -164,9 +164,9 @@ class ExpfamFilter:
         eta = self.link_fn(bel.mean, xt).astype(float)
         yhat = self.mean(eta)
         err = self.suff_statistic(yt) - yhat
-        Rt = self.covariance(eta)
+        Rt = jnp.atleast_2d(self.covariance(eta))
 
-        Ht = self.grad_link_fn(pmean_pred, xt)
+        Ht = Rt @ self.grad_link_fn(pmean_pred, xt)
         St = Ht @ pcov_pred @ Ht.T + Rt
         Kt = jnp.linalg.solve(St, Ht @ pcov_pred).T
 
