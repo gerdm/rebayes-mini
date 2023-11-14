@@ -9,6 +9,7 @@ from rebayes_mini import callbacks
 class GBState:
     mean: chex.Array
     covariance: chex.Array
+    weighting_term: float = 1.0
 
 
 class WSMFilter:
@@ -176,17 +177,17 @@ class IMQFilter:
 
         yhat = self.link_fn(pmean_pred, xt)
         err = yt - yhat
-        Rt = self.observation_covariance
+        Rt = jnp.atleast_2d(self.observation_covariance)
         weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
 
-        Ht = self.grad_link_fn(pmean_pred, xt)
+        Ht = Rt @ self.grad_link_fn(pmean_pred, xt)
         St = Ht @ pcov_pred @ Ht.T + Rt / weighting_term
         Kt = jnp.linalg.solve(St, Ht @ pcov_pred).T
 
         pmean = pmean_pred + weighting_term * Kt @ err
         pcov = pcov_pred - Kt @ St @ Kt.T
 
-        bel_new = bel.replace(mean=pmean, covariance=pcov)
+        bel_new = bel.replace(mean=pmean, covariance=pcov, weighting_term=weighting_term)
         output = callback_fn(bel_new, bel, xt, yt)
         return bel_new, output
 
