@@ -93,9 +93,10 @@ class WSMFilter:
             gradr, mval, mval, Cv
         )
 
-        # divergence
-        # TODO: make sure term1 and term2 have the same shape
-        term2 = jax.jacrev(self.divterm)(y, mean, x).sum(axis=0).sum(axis=-1)
+        # TODO: clean this mess
+        term2 = jax.jacrev(self.divterm)(y, mean, x).sum(axis=0)#sum(axis=-1)
+        if len(y) > 1:
+            term2 = term2.sum(axis=-1)
 
         return gradl.T @ (term1 + term2)
     
@@ -137,6 +138,7 @@ class IMQFilter:
     def __init__(
         self, apply_fn, dynamics_covariance, observation_covariance, soft_threshold,
         transition_matrix=None,
+        adaptive_dynamics=False,
     ):
         """
         apply_fn: function
@@ -147,6 +149,7 @@ class IMQFilter:
         self.observation_covariance = observation_covariance
         self.soft_threshold = soft_threshold
         self.transition_matrix = transition_matrix
+        self.adaptive_dynamics = adaptive_dynamics * 1.0
 
     def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
@@ -172,8 +175,9 @@ class IMQFilter:
 
     def step(self, bel, xs, callback_fn):
         xt, yt = xs
+        dynamics_covariance = self.dynamics_covariance * (1 - bel.weighting_term ** 2) ** 2 * self.adaptive_dynamics
         pmean_pred = self.transition_matrix @ bel.mean
-        pcov_pred = self.transition_matrix @ bel.covariance @ self.transition_matrix.T + self.dynamics_covariance
+        pcov_pred = self.transition_matrix @ bel.covariance @ self.transition_matrix.T + dynamics_covariance
 
         yhat = self.link_fn(pmean_pred, xt)
         err = yt - yhat
