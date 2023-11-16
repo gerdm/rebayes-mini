@@ -175,7 +175,7 @@ class IMQFilter:
 
     def step(self, bel, xs, callback_fn):
         xt, yt = xs
-        dynamics_covariance = self.dynamics_covariance * (1 - bel.weighting_term ** 2) ** 2 * self.adaptive_dynamics
+        dynamics_covariance = self.dynamics_covariance * (1 - bel.weighting_term) ** 2 * self.adaptive_dynamics
         pmean_pred = self.transition_matrix @ bel.mean
         pcov_pred = self.transition_matrix @ bel.covariance @ self.transition_matrix.T + dynamics_covariance
 
