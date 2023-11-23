@@ -95,7 +95,7 @@ class WSMFilter:
 
         # TODO: clean this mess
         term2 = jax.jacrev(self.divterm)(y, mean, x).sum(axis=0)#sum(axis=-1)
-        if len(y) > 1:
+        if len(jnp.atleast_1d(y)) > 1:
             term2 = term2.sum(axis=-1)
 
         return gradl.T @ (term1 + term2)
