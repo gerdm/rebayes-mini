@@ -131,7 +131,7 @@ class WSMFilter:
 
 class IMQFilter:
     """
-    Matt's Inverse-Multi-Quadratic filter
+    Inverse-Multi-Quadratic filter
     for a Gaussian state space model with 
     known observation covariance
     """
@@ -149,7 +149,7 @@ class IMQFilter:
         self.observation_covariance = observation_covariance
         self.soft_threshold = soft_threshold
         self.transition_matrix = transition_matrix
-        self.adaptive_dynamics = adaptive_dynamics * 1.0
+        self.adaptive_dynamics = adaptive_dynamics
 
     def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
@@ -175,7 +175,11 @@ class IMQFilter:
 
     def step(self, bel, xs, callback_fn):
         xt, yt = xs
-        dynamics_covariance = self.dynamics_covariance * (1 - bel.weighting_term) ** 2 * self.adaptive_dynamics
+        dynamics_covariance = jax.lax.cond(
+            self.adaptive_dynamics,
+            lambda: self.dynamics_covariance * (1 - bel.weighting_term) ** 2,
+            lambda: self.dynamics_covariance,
+        )
         pmean_pred = self.transition_matrix @ bel.mean
         pcov_pred = self.transition_matrix @ bel.covariance @ self.transition_matrix.T + dynamics_covariance
 
@@ -184,12 +188,11 @@ class IMQFilter:
         Rt = jnp.atleast_2d(self.observation_covariance)
         weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
 
-        Ht = Rt @ self.grad_link_fn(pmean_pred, xt)
-        St = Ht @ pcov_pred @ Ht.T + Rt / weighting_term
-        Kt = jnp.linalg.solve(St, Ht @ pcov_pred).T
-
-        pmean = pmean_pred + weighting_term * Kt @ err
-        pcov = pcov_pred - Kt @ St @ Kt.T
+        Rt_inv = jnp.linalg.inv(Rt)
+        Ht = self.grad_link_fn(pmean_pred, xt)
+        pprec = jnp.linalg.inv(pcov_pred) + weighting_term * Ht.T @ Rt_inv @ Ht
+        pcov = jnp.linalg.inv(pprec)
+        pmean = pmean_pred + weighting_term * pcov @ Ht.T @ Rt_inv @ err
 
         bel_new = bel.replace(mean=pmean, covariance=pcov, weighting_term=weighting_term)
         output = callback_fn(bel_new, bel, xt, yt)
