@@ -3,12 +3,20 @@ import chex
 import jax.numpy as jnp
 from functools import partial
 from jax.flatten_util import ravel_pytree
+from rebayes_mini.methods import gauss_filter as kf
 from rebayes_mini import callbacks
 
 @chex.dataclass
 class GBState:
     mean: chex.Array
     covariance: chex.Array
+    weighting_term: float = 1.0
+
+@chex.dataclass
+class RGBState:
+    mean: chex.Array
+    covariance: chex.Array
+    key: chex.Array = None
     weighting_term: float = 1.0
 
 
@@ -127,6 +135,74 @@ class WSMFilter:
         _step = partial(self.step, learning_rate=learning_rate, callback_fn=callback_fn)
         bel, hist = jax.lax.scan(_step, bel, D)
         return bel, hist
+
+
+class WeightedObsCovFilter(kf.KalmanFilter):
+    """
+    Ting, JA., Theodorou, E., Schaal, S. (2007).
+    Learning an Outlier-Robust Kalman Filter.
+    In: Kok, J.N., Koronacki, J., Mantaras, R.L.d., Matwin, S., Mladenič, D., Skowron, A. (eds)
+    Machine Learning: ECML 2007. ECML 2007. Lecture Notes in Computer Science(),
+    vol 4701. Springer, Berlin, Heidelberg. https://doi.org/10.1007/978-3-540-74958-5_76
+
+    Special case for known SSM hyperparameters --- no M-step
+    """
+    def __init__(
+        self, transition_matrix, dynamics_covariance, observation_covariance,
+        prior_shape, prior_rate, n_inner=1, n_samples=10
+    ):
+        super().__init__(transition_matrix, dynamics_covariance, observation_covariance)
+        # Prior gamma parameters per timestep.
+        # We assume are fixed through time
+        self.prior_shape = prior_shape # alpha term
+        self.prior_rate = prior_rate # beta term
+        self.n_inner = n_inner
+        self.n_samples = n_samples
+    
+    def init_bel(self, mean, covariance, key=314):
+        state = RGBState(
+            mean=mean,
+            covariance=jnp.eye(len(mean)) * covariance,
+            weighting_term=1.0,
+            key=jax.random.PRNGKey(key)
+        )
+        return state
+    
+    @partial(jax.vmap, in_axes=(None, 0, None, None, None))
+    def _err_term(self, mean, y, x, R_inv):
+        """
+        Error correcting term for the posterior
+        mean and covariance
+        """
+        err = y - x @ self.transition_matrix @ mean
+        return err.T @ R_inv @ err
+
+    def _update(self, i, bel, bel_prev, y, x):
+        keyt = jax.random.fold_in(bel.key, i)
+        mean_samples = jax.random.multivariate_normal(keyt, bel.mean, bel.covariance, (self.n_samples,))
+        Rinv = jnp.linalg.inv(self.observation_covariance)
+        mean_err = self._err_term(mean_samples, y, x, Rinv).mean()
+
+        yhat = x @ self.transition_matrix @ bel_prev.mean
+        weighting_term = (self.prior_shape + 1 / 2) / (self.prior_rate + mean_err / 2)
+        pprec = jnp.linalg.inv(self.dynamics_covariance + bel_prev.covariance) + weighting_term * x.T @ Rinv @ x
+        pcov = jnp.linalg.inv(pprec)
+        pmean = self.transition_matrix @ bel_prev.mean + weighting_term * pcov @ x.T @ Rinv @ (y - yhat)
+
+        bel = bel.replace(
+            mean=pmean,
+            covariance=pcov,
+            weighting_term=weighting_term,
+            key=keyt
+        )
+        return bel
+    
+    def step(self, bel, y, x, callback_fn):
+        partial_update = partial(self._update, y=y, x=x, bel_prev=bel)
+        bel_update = jax.lax.fori_loop(0, self.n_inner, partial_update, bel)
+        output = callback_fn(bel_update, bel, y, x)
+
+        return bel_update, output
 
 
 class IMQFilter:
