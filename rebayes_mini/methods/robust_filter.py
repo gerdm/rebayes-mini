@@ -219,6 +219,9 @@ class RobustStFilter(ExtendedKalmanFilter):
         expected_dof = bel.dof_shape / bel.dof_rate # (30)
         D_term = self._compute_D_term(bel, bel_pred, y, x)
         expected_log_weighting_term = digamma(bel.weighting_shape) - jnp.log(bel.weighting_rate) # (32)
+
+        expectations = expected_obs_prec, expected_weighting_term, expected_dof
+        return expectations
     
     def _predict_step(self, bel):
         # Time update
@@ -246,7 +249,8 @@ class RobustStFilter(ExtendedKalmanFilter):
 
         return bel
 
-    def _update_step(self, bel, expected_terms, y, x):
+    def _update_step(self, i, group, y, x):
+        bel, expected_terms = group
         expected_obs_prec, expected_weighting_term, expected_dof = expected_terms
         # Time update
         obs_cov_est = expected_obs_prec / expected_weighting_term # (11)
@@ -283,4 +287,16 @@ class RobustStFilter(ExtendedKalmanFilter):
         
         )
 
-        return bel, expected_terms
+        group = (bel, expected_terms)
+        return group
+
+    def step(self, bel, xs, callback_fn):
+        xt, yt = xs
+        bel_pred = self._predict_step(bel)
+        partial_update = partial(self._update_step, y=yt, x=xt)
+        expected_terms = self._compute_initial_expectations(bel_pred, bel_pred, yt, xt)
+        group_init = bel_pred, expected_terms
+        bel_update, _ = jax.lax.fori_loop(0, self.n_inner, partial_update, group_init)
+        output = callback_fn(bel_update, bel_pred, yt, xt)
+
+        return bel_update, output
