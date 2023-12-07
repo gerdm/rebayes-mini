@@ -3,7 +3,8 @@ import chex
 import jax.numpy as jnp
 from functools import partial
 from jax.flatten_util import ravel_pytree
-from rebayes_mini.methods.gauss_filter import KalmanFilter
+from jax.scipy.special import digamma
+from rebayes_mini.methods.gauss_filter import KalmanFilter, ExtendedKalmanFilter
 from rebayes_mini import callbacks
 
 
@@ -20,14 +21,24 @@ class WOCFState:
 
 @chex.dataclass
 class RobustStState:
+    # State
     mean: chex.Array
     covariance: chex.Array
-    obs_cov_scale: chex.Array
-    obs_cov_dof: float
-    dof_a: float
-    dof_b: float
-    scale_nu: float
+
+    # Rt --- Observation covariance
+    obs_cov_scale: chex.Array # U
+    obs_cov_dof: float # u
+
+    # 1 / lambda --- noise scaling
+    weighting_shape: float # lambda-alpha
+    weighting_rate: float # lambda-beta
+
+    # nu --- degrees of freedom for noise scaling
+    dof_shape: float # nu-a
+    dof_rate: float # nu-b
+
     rho: float
+    dim_obs: int
 
 
 class WeightedObsCovFilter(KalmanFilter):
@@ -143,9 +154,9 @@ class RobustKalmanFilter(KalmanFilter):
         return bel_update, output
 
 
-class RobustStFilter:
+class RobustStFilter(ExtendedKalmanFilter):
     """
-    Huang2016 with Extended Kalman filter predict and update equations
+    Huang2016 modified with Extended Kalman filter predict and update equations
     """
     def __init__(
         self, fn_latent, fn_obs, dynamics_covariance,
@@ -153,18 +164,123 @@ class RobustStFilter:
         self.fn_latent = fn_latent
         self.fn_obs = fn_obs
         self.dynamics_covariance = dynamics_covariance
-    
 
     def init_bel(
-        self, mean, covariance, obs_cov_scale, obs_cov_dof, dof_a, dof_b, scale_nu, rho
+        self, mean, covariance, obs_cov_scale, obs_cov_dof,
+        dof_shape, dof_rate, weighting_shape, weighting_rate, rho, dim_obs
     ):
+        self.rfn, self.vlatent_fn, self.vobs_fn, vlatent = super()._initalise_vector_fns(mean)
+        self.jac_latent = jax.jacrev(self.vlatent_fn) # Ft
+        self.jac_obs = jax.jacrev(self.vobs_fn) # Ht
+
+        dim_latent = len(vlatent)
         return RobustStState(
             mean=mean,
-            covariance=covariance,
-            obs_cov_scale=obs_cov_scale,
+            covariance=covariance * jnp.eye(dim_latent),
+            obs_cov_scale=obs_cov_scale * jnp.eye(dim_obs),
             obs_cov_dof=obs_cov_dof,
-            dof_a=dof_a,
-            dof_b=dof_b,
-            scale_nu=scale_nu,
+            dof_shape=dof_shape,
+            dof_rate=dof_rate,
+            weighting_shape=weighting_shape,
+            weighting_rate=weighting_rate,
             rho=rho,
+            dim_obs=dim_obs
         )
+
+    def _ekf_update_step(self, bel, observation_covariance, y, x):
+        Ht = self.jac_obs(bel.mean, x)
+        Rt_inv = jnp.linalg.inv(observation_covariance)
+        yhat = self.vobs_fn(bel.mean, x)
+        prec_update = jnp.linalg.inv(bel.cov) + Ht.T @ Rt_inv @ Ht
+        cov_update = jnp.linalg.inv(prec_update)
+        Kt = cov_update @ Ht.T @ Rt_inv
+        mean_update = bel.mean + Kt @ (y - yhat)
+
+        bel = bel.replace(mean=mean_update, cov=cov_update)
+        return bel
+    
+    def _compute_D_term(self, bel, bel_pred, y, x):
+        """
+        Equation (15) 
+        """
+        Ht = self.jac_obs(bel_pred.mean, x)
+        ht = self.vobs_fn(bel_pred.mean, x)
+        yhat_c = ht + Ht @ (bel.mean - bel_pred.mean)
+        err = y - yhat_c
+        D = jnp.outer(err, err) + Ht @ bel.cov @ Ht.T
+        return D
+    
+    def _compute_initial_expectations(self, bel, bel_pred, y, x):
+        """
+        Compute initial expectations using (28) - (32)
+        """
+        expected_obs_prec = (bel.obs_cov_dof - bel.dim_obs - 1) * jnp.linalg.inv(bel.obs_cov_scale) # (28)
+        expected_weighting_term = bel.weighting_shape / bel.weighting_rate # (29)
+        expected_dof = bel.dof_shape / bel.dof_rate # (30)
+        D_term = self._compute_D_term(bel, bel_pred, y, x)
+        expected_log_weighting_term = digamma(bel.weighting_shape) - jnp.log(bel.weighting_rate) # (32)
+    
+    def _predict_step(self, bel):
+        # Time update
+        bel = super()._predict_step(bel) # EKF predict step
+        obs_cov_dof = bel.rho * (
+            bel.obs_cov_dof + bel.dim_obs - 1
+        ) + bel.dim_obs + 1
+        obs_cov_scale = bel.rho * bel.obs_cov_scale
+        dof_shape = bel.rho * bel.dof_shape
+        dof_rate = bel.rho * bel.dof_rate
+
+        # Measurement update
+        dof_shape = dof_shape + 0.5
+        weighting_shape = 0.5 * dof_shape / dof_rate
+        weighting_rate = 0.5 * dof_shape / dof_rate 
+
+        bel = bel.replace(
+            obs_cov_dof=obs_cov_dof,
+            obs_cov_scale=obs_cov_scale,
+            dof_shape=dof_shape,
+            dof_rate=dof_rate,
+            weighting_shape=weighting_shape,
+            weighting_rate=weighting_rate
+        )
+
+        return bel
+
+    def _update_step(self, bel, expected_terms, y, x):
+        expected_obs_prec, expected_weighting_term, expected_dof = expected_terms
+        # Time update
+        obs_cov_est = expected_obs_prec / expected_weighting_term # (11)
+        bel = self._ekf_update_step(bel, obs_cov_est, y, x)
+
+        D = self._compute_D_term(bel, y, x) # (31)
+
+        dof_shape = (self.dim_obs + expected_dof) / 2 #(17)
+        dof_scale = (jnp.einsum("ij,ij->", D, obs_cov_est) + expected_dof) / 2 #(18)
+
+        expected_weighting_term = bel.weighting_shape / bel.weighting_rate # (29)
+        expected_log_weighting_term = digamma(bel.weighting_shape) - jnp.log(bel.weighting_rate) # (32)
+
+        obs_cov_dof = bel.obs_cov_dof + 1.0 # (21)
+        obs_cov_scale =  bel.obs_cov_scale + expected_weighting_term * D # (22)
+
+        dof_shape = dof_shape + 0.5 # (26)
+        dof_rate = dof_rate - 0.5 - 0.5 * expected_log_weighting_term + 0.5 * expected_weighting_term
+
+        expected_obs_prec = (bel.obs_cov_dof - bel.dim_obs - 1) * jnp.linalg.inv(bel.obs_cov_scale) # (28)
+        expected_dof = bel.dof_shape / bel.dof_rate # (30)
+
+        bel = bel.replace(
+            obs_cov_dof=obs_cov_dof,
+            obs_cov_scale=obs_cov_scale,
+            dof_shape=dof_shape,
+            dof_rate=dof_rate,
+            expected_obs_prec=expected_obs_prec,
+            expected_dof=expected_dof
+        )
+
+        expected_terms = (
+            expected_obs_prec, expected_weighting_term, expected_dof
+        
+        )
+
+        return bel, expected_terms
