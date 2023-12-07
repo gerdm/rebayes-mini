@@ -95,8 +95,8 @@ class ExtendedKalmanFilter:
     
         return rfn, vlatent_fn, vobs_fn, vlatent
 
-    def init_bel(self, latent, cov=1.0):
-        self.rfn, self.vlatent_fn, self.vobs_fn, vlatent = self._initalise_vector_fns(latent)
+    def init_bel(self, mean, cov=1.0):
+        self.rfn, self.vlatent_fn, self.vobs_fn, vlatent = self._initalise_vector_fns(mean)
         self.jac_latent = jax.jacrev(self.vlatent_fn) # Ft
         self.jac_obs = jax.jacrev(self.vobs_fn) # Ht
 
@@ -142,9 +142,7 @@ class ExtendedKalmanFilter:
 
 
 class ExpfamFilter:
-    def __init__(
-        self, apply_fn, log_partition, suff_statistic, dynamics_covariance,
-    ):
+    def __init__(self, apply_fn, log_partition, suff_statistic, dynamics_covariance):
         """
         apply_fn: function
             Maps state and observation to the natural parameters
