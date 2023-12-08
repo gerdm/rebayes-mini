@@ -120,11 +120,12 @@ class ExtendedRobustKalmanFilter(ExtendedKalmanFilter):
     def _update(self, _, bel, bel_pred, x, y):
         Ht = self.jac_obs(bel.mean, x)
         I = jnp.eye(len(bel.mean))
-        S = (y - Ht @ bel.mean) @ (y - Ht @ bel.mean).T + Ht @ bel.cov @ Ht.T
+        yhat_corr = self.vobs_fn(bel_pred.mean, x) + Ht @ (bel.mean - bel_pred.mean)
+        S = (y - yhat_corr) @ (y - yhat_corr).T + Ht @ bel.cov @ Ht.T
         Lambda = (self.noise_scaling * self.observation_covariance + S) / (self.noise_scaling + 1)
 
         Kt = jnp.linalg.solve(Ht @ bel_pred.cov @ Ht.T + Lambda, Ht @ bel_pred.cov)
-        mean_new = bel_pred.mean + Kt.T @ (y - Ht @ bel_pred.mean)
+        mean_new = bel_pred.mean + Kt.T @ (y - self.vobs_fn(bel_pred.mean, x))
         cov_new = Kt.T @ Lambda @ Kt + (I - Ht.T @ Kt).T @ bel_pred.cov @ (I - Ht.T @ Kt)
 
         bel = bel.replace(mean=mean_new, cov=cov_new)
