@@ -90,7 +90,6 @@ class ExtendedKalmanFilter:
         
         @jax.jit # ft(z, u)
         def vlatent_fn(latent):
-            latent = rfn(latent)
             return self.fn_latent(latent)
     
         return rfn, vlatent_fn, vobs_fn, vlatent
