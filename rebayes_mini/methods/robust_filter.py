@@ -108,7 +108,36 @@ class WeightedObsCovFilter(KalmanFilter):
 
         return bel_update, output
 
+class ExtendedRobustKalmanFilter(ExtendedKalmanFilter):
+    def __init__(
+        self, fn_latent, fn_obs, dynamics_covariance, prior_observation_covariance, n_inner,
+        noise_scaling
+    ):
+        super().__init__(fn_latent, fn_obs, dynamics_covariance, prior_observation_covariance)
+        self.n_inner = n_inner
+        self.noise_scaling = noise_scaling
 
+    def _update(self, _, bel, bel_pred, x, y):
+        Ht = self.jac_obs(bel.mean, x)
+        I = jnp.eye(len(bel.mean))
+        S = (y - Ht @ bel.mean) @ (y - Ht @ bel.mean).T + Ht @ bel.cov @ Ht.T
+        Lambda = (self.noise_scaling * self.observation_covariance + S) / (self.noise_scaling + 1)
+
+        Kt = jnp.linalg.solve(Ht @ bel_pred.cov @ Ht.T + Lambda, Ht @ bel_pred.cov)
+        mean_new = bel_pred.mean + Kt.T @ (y - Ht @ bel_pred.mean)
+        cov_new = Kt.T @ Lambda @ Kt + (I - Ht.T @ Kt).T @ bel_pred.cov @ (I - Ht.T @ Kt)
+
+        bel = bel.replace(mean=mean_new, cov=cov_new)
+        return bel
+
+    def step(self, bel, xs, callback_fn):
+        x, y = xs
+        bel_pred = super()._predict_step(bel)
+        partial_update = partial(self._update, bel_pred=bel_pred, x=x, y=y)
+        bel_update = jax.lax.fori_loop(0, self.n_inner, partial_update, bel_pred)
+        output = callback_fn(bel_update, bel_pred, y, x)
+
+        return bel_update, output
 
 
 class RobustKalmanFilter(KalmanFilter):
