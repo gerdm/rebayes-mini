@@ -108,6 +108,7 @@ class WeightedObsCovFilter(KalmanFilter):
 
         return bel_update, output
 
+
 class ExtendedRobustKalmanFilter(ExtendedKalmanFilter):
     def __init__(
         self, fn_latent, fn_obs, dynamics_covariance, prior_observation_covariance, n_inner,
@@ -120,7 +121,7 @@ class ExtendedRobustKalmanFilter(ExtendedKalmanFilter):
     def _update(self, _, bel, bel_pred, x, y):
         Ht = self.jac_obs(bel.mean, x)
         I = jnp.eye(len(bel.mean))
-        yhat_corr = self.vobs_fn(bel_pred.mean, x) + Ht @ (bel.mean - bel_pred.mean)
+        yhat_corr = self.vobs_fn(bel.mean, x) # + Ht @ (bel.mean - bel_pred.mean)
         S = (y - yhat_corr) @ (y - yhat_corr).T + Ht @ bel.cov @ Ht.T
         Lambda = (self.noise_scaling * self.observation_covariance + S) / (self.noise_scaling + 1)
 
