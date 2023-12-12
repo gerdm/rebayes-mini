@@ -193,7 +193,8 @@ class IMQFilter:
         Ht = self.grad_link_fn(pmean_pred, xt)
         pprec = jnp.linalg.inv(pcov_pred) + weighting_term * Ht.T @ Rt_inv @ Ht
         pcov = jnp.linalg.inv(pprec)
-        pmean = pmean_pred + weighting_term * pcov @ Ht.T @ Rt_inv @ err
+        Kt = pcov @ Ht.T @ Rt_inv
+        pmean = pmean_pred + weighting_term * Kt @ err
 
         bel_new = bel.replace(mean=pmean, covariance=pcov, weighting_term=weighting_term)
         output = callback_fn(bel_new, bel, xt, yt)
