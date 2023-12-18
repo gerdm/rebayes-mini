@@ -300,16 +300,17 @@ class RobustStFilter(ExtendedKalmanFilter):
         D = self._compute_D_term(bel, bel_pred, y, x) # (31)
 
         weighting_shape = (bel.dim_obs + expected_dof) / 2 #(17)
-        weighting_rate = jnp.einsum("ij,ij->", D, obs_cov_est) / 2 + expected_dof / 2 # (18)
+        weighting_rate = jnp.einsum("ij,ji->", D, obs_cov_est) / 2 + expected_dof / 2 # (18)
 
         expected_weighting_term = weighting_shape / weighting_rate # (29)
         expected_log_weighting_term = digamma(weighting_shape) - jnp.log(weighting_rate) # (32)
 
-        obs_cov_dof = bel.obs_cov_dof + 1.0 # (21)
-        obs_cov_scale =  bel.obs_cov_scale + expected_weighting_term * D # (22)
+        obs_cov_dof = bel_pred.obs_cov_dof + 1.0 # (21)
+        obs_cov_scale =  bel_pred.obs_cov_scale + expected_weighting_term * D # (22)
 
-        dof_shape = bel.dof_shape + 0.5 # (26)
-        dof_rate = bel.dof_rate - 0.5 - 0.5 * expected_log_weighting_term + 0.5 * expected_weighting_term
+        # degrees of freedom's shape and rate
+        dof_shape = bel_pred.dof_shape + 0.5 # (26)
+        dof_rate = bel_pred.dof_rate - 0.5 - 0.5 * expected_log_weighting_term + 0.5 * expected_weighting_term # (27)
 
         expected_obs_prec = (obs_cov_dof - bel.dim_obs - 1) * jnp.linalg.inv(obs_cov_scale) # (28)
         expected_dof = dof_shape / dof_rate # (30)
@@ -327,7 +328,7 @@ class RobustStFilter(ExtendedKalmanFilter):
             expected_obs_prec, expected_weighting_term, expected_dof
         )
 
-        group = (bel, expected_terms)
+        group = bel, expected_terms
         return group
 
     def step(self, bel, xs, callback_fn):
