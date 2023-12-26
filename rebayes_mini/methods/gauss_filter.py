@@ -19,13 +19,13 @@ class KalmanFilter:
         self.transition_matrix = transition_matrix
         self.dynamics_covariance = dynamics_covariance
         self.observation_covariance = observation_covariance
-    
+
     def init_bel(self, mean, cov=1.0):
         return KFState(
             mean=mean,
             cov=jnp.eye(len(mean)) * cov,
         )
-    
+
     def step(self, bel, y, obs_matrix, callback_fn):
         # Predict step
         mean_pred = self.transition_matrix @ bel.mean
@@ -41,12 +41,12 @@ class KalmanFilter:
         bel_update = bel.replace(mean=mean, cov=cov)
         output = callback_fn(bel_update, bel, y, mean_pred)
         return bel_update, output
-    
+
 
     def initialise_active_step(self, y, X, callback_fn):
         """
         Create a step function that makes either
-        the observation matrix fixed or part of the 
+        the observation matrix fixed or part of the
         filtering process as a function of t
         """
         if X.shape[0] != y.shape[0]:
@@ -60,10 +60,10 @@ class KalmanFilter:
                 bel, output = self.step(bel, y, x, callback_fn)
                 return bel, output
             xs = (y, X)
-        
+
         return _step, xs
 
-    
+
     def scan(self, bel, y, X, callback_fn=None):
         callback_fn = callbacks.get_null if callback_fn is None else callback_fn
         _step, xs = self.initialise_active_step(y, X, callback_fn)
@@ -87,31 +87,38 @@ class ExtendedKalmanFilter:
         def vobs_fn(latent, x):
             latent = rfn(latent)
             return self.fn_obs(latent, x)
-        
+
         @jax.jit # ft(z, u)
         def vlatent_fn(latent):
             return self.fn_latent(latent)
-    
+
         return rfn, vlatent_fn, vobs_fn, vlatent
 
-    def init_bel(self, mean, cov=1.0):
+    def _init_components(self, mean, cov):
         self.rfn, self.vlatent_fn, self.vobs_fn, vlatent = self._initalise_vector_fns(mean)
         self.jac_latent = jax.jacrev(self.vlatent_fn) # Ft
         self.jac_obs = jax.jacrev(self.vobs_fn) # Ht
-
         dim_latent = len(vlatent)
+
+        cov = jnp.eye(dim_latent) * cov
+        return vlatent, cov, dim_latent
+
+
+    def init_bel(self, mean, cov=1.0):
+        mean, cov, dim_latent = self._init_components(mean, cov)
+
         return KFState(
-            mean=vlatent,
-            cov=jnp.eye(dim_latent) * cov,
+            mean=mean,
+            cov=cov,
         )
-    
+
     def _predict_step(self, bel):
         Ft = self.jac_latent(bel.mean)
         mean_pred = self.vlatent_fn(bel.mean)
         cov_pred = Ft @ bel.cov @ Ft.T + self.dynamics_covariance
         bel = bel.replace(mean=mean_pred, cov=cov_pred)
         return bel
-    
+
     def _update_step(self, bel, y, x):
         Ht = self.jac_obs(bel.mean, x)
         Rt_inv = jnp.linalg.inv(self.observation_covariance)
