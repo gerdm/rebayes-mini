@@ -29,7 +29,7 @@ class WSMFilter:
         self.log_base_measure = log_base_measure
         self.grad_log_base_measure = jax.grad(log_base_measure)
         self.transition_matrix = transition_matrix
-        
+
 
     def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn = self._initialise_link_fn(self.apply_fn, params)
@@ -56,7 +56,7 @@ class WSMFilter:
             return apply_fn(rfn(params), x)
 
         return rfn, link_fn
-        
+
 
     def C(self, y, m, x):
         # Output: (P,)
@@ -68,7 +68,7 @@ class WSMFilter:
         mval = self.m(y, mean, x)
         gradr = self.grad_sstat(y)
         gradl = self.grad_link(mean, x)
-        
+
         out = jnp.einsum(
             "ji,jk,kl,ml,nm,no->io",
             gradl, gradr, mval, mval, gradr, gradl
@@ -100,28 +100,28 @@ class WSMFilter:
             term2 = term2.sum(axis=-1)
 
         return gradl.T @ (term1 + term2)
-    
+
     def step(self, bel, D, learning_rate, callback_fn):
         y, x = D
         hat_cov = self.transition_matrix @ bel.covariance @ self.transition_matrix.T + self.dynamics_covariance
         hat_prec = jnp.linalg.inv(hat_cov)
         hat_mean = self.transition_matrix @ bel.mean
-        
+
         Lambda = self.Lambda(y, hat_mean, x)
         nu = self.nu(y, hat_mean, x)
-        
+
         prec = hat_prec + 2 * learning_rate * Lambda
         cov = jnp.linalg.inv(prec)
         mean = cov @ (hat_prec @ hat_mean - 2 * learning_rate * nu)
-        
+
         bel_update = bel.replace(
             mean=mean,
             covariance=cov
         )
         output = callback_fn(bel_update, bel, y, x)
         return bel_update, output
-    
-    
+
+
     def scan(self, bel, y, x=None, learning_rate=1.0, callback_fn=None):
         D = (y, x)
         callback_fn = callbacks.get_null if callback_fn is None else callback_fn
@@ -133,7 +133,7 @@ class WSMFilter:
 class IMQFilter:
     """
     Inverse-Multi-Quadratic filter
-    for a Gaussian state space model with 
+    for a Gaussian state space model with
     known observation covariance
     """
     def __init__(
@@ -197,7 +197,7 @@ class IMQFilter:
         pmean = pmean_pred + weighting_term * Kt @ err
 
         bel_new = bel.replace(mean=pmean, covariance=pcov, weighting_term=weighting_term)
-        output = callback_fn(bel_new, bel, xt, yt)
+        output = callback_fn(bel_new, bel, yt, xt)
         return bel_new, output
 
     def scan(self, bel, y, X, callback_fn=None):

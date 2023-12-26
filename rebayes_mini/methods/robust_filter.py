@@ -390,5 +390,5 @@ class ExtendedThresholdedKalmanFilter(ExtendedKalmanFilter):
         bel_update = jax.lax.cond(err_distance < self.threshold, lambda: bel_update, lambda: bel_pred)
         bel_update = bel_update.replace(err=err_distance)
 
-        output = callback_fn(bel_update, bel_pred, xt, yt)
+        output = callback_fn(bel_update, bel_pred, yt, xt)
         return bel_update, output

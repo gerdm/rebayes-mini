@@ -136,7 +136,7 @@ class ExtendedKalmanFilter:
         bel_pred = self._predict_step(bel)
         bel_update = self._update_step(bel_pred, yt, xt)
 
-        output = callback_fn(bel_update, bel_pred, xt, yt)
+        output = callback_fn(bel_update, bel_pred, yt, xt)
         return bel_update, output
 
     def scan(self, bel, y, X, callback_fn=None):
@@ -205,7 +205,7 @@ class ExpfamFilter:
         pmean = pmean_pred + (Kt @ err).squeeze()
 
         bel_new = bel.replace(mean=pmean, cov=pcov)
-        output = callback_fn(bel_new, bel, xt, yt)
+        output = callback_fn(bel_new, bel, yt, xt)
         return bel_new, output
 
     def scan(self, bel, y, X, callback_fn=None):
