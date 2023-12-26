@@ -18,6 +18,12 @@ class WOCFState:
     key: chex.Array = None
     weighting_term: float = 1.0
 
+@chex.dataclass
+class KFTState:
+    """State of the Kalman Filter"""
+    mean: chex.Array
+    cov: chex.Array
+    err: chex.Array
 
 @chex.dataclass
 class RobustStState:
@@ -340,4 +346,49 @@ class RobustStFilter(ExtendedKalmanFilter):
         bel_update, _ = jax.lax.fori_loop(0, self.n_inner, partial_update, group_init)
         output = callback_fn(bel_update, bel_pred, yt, xt)
 
+        return bel_update, output
+
+
+class ExtendedThresholdedKalmanFilter(ExtendedKalmanFilter):
+    """
+    Heuristic-based thresholding of the update
+    first presented in Ting et al. 2007
+    """
+    def __init__(
+        self, fn_latent, fn_observed, dynamics_covariance, observation_covariance, threshold
+    ):
+        super().__init__(fn_latent, fn_observed, dynamics_covariance, observation_covariance)
+        self.threshold = threshold
+
+    def init_bel(self, mean, cov=1.0):
+        mean, cov, dim_latent = self._init_components(mean, cov)
+
+        return KFTState(
+            mean=mean,
+            cov=cov,
+            err=0.0
+        )
+
+    def _update_step(self, bel, y, x):
+        Ht = self.jac_obs(bel.mean, x)
+        Rt_inv = jnp.linalg.inv(self.observation_covariance)
+        yhat = self.vobs_fn(bel.mean, x)
+        prec_update = jnp.linalg.inv(bel.cov) + Ht.T @ Rt_inv @ Ht
+        cov_update = jnp.linalg.inv(prec_update)
+        Kt = cov_update @ Ht.T @ Rt_inv
+        err = y - yhat
+        mean_update = bel.mean + Kt @ err
+        bel = bel.replace(mean=mean_update, cov=cov_update)
+        return bel, err
+
+    def step(self, bel, xs, callback_fn):
+        xt, yt = xs
+        bel_pred = self._predict_step(bel)
+        bel_update, err = self._update_step(bel_pred, yt, xt)
+        err_distance = jnp.sqrt(jnp.einsum("j,jk,k->", err, jnp.linalg.inv(self.observation_covariance), err))
+
+        bel_update = jax.lax.cond(err_distance < self.threshold, lambda: bel_update, lambda: bel_pred)
+        bel_update = bel_update.replace(err=err_distance)
+
+        output = callback_fn(bel_update, bel_pred, xt, yt)
         return bel_update, output
