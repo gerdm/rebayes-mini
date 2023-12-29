@@ -116,6 +116,9 @@ class WeightedObsCovFilter(KalmanFilter):
 
 
 class ExtendedRobustKalmanFilter(ExtendedKalmanFilter):
+    """
+    Agamenoni, G., Nieto, J.I., Nebot, E.M. (2012).
+    """
     def __init__(
         self, fn_latent, fn_obs, dynamics_covariance, prior_observation_covariance, n_inner,
         noise_scaling
