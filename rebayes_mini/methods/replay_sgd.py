@@ -123,7 +123,7 @@ class FifoSGD:
     def _step(self, bel, xs, callback_fn):
         X, y = xs
         bel_update = self.update_state(bel, X, y)
-        output = callback_fn(bel_update, bel, X, y)
+        output = callback_fn(bel_update, bel, y, X)
         return bel_update, output
 
     def scan(self, bel, y, x, callback_fn=None):
