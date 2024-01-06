@@ -12,6 +12,10 @@ class EnsembleKalmanFilter:
         self.obs_fn = obs_fn
         self.n_particles = n_particles
         self.matrix_deviation = jnp.eye(n_particles) - jnp.ones((n_particles, n_particles)) / n_particles
+    
+    def init_bel(self, key, dim_latent):
+        particles = jax.random.normal(key, (self.n_particles, dim_latent))
+        return particles
 
     def _predict_step(self, particles, key, X):
         key_latent, key_obs = jax.random.split(key)
@@ -54,3 +58,28 @@ class EnsembleKalmanFilter:
         xs = (y, X, timesteps)
         particles, hist = jax.lax.scan(_step, particles_init, xs)
         return particles, hist
+
+
+class WLEnsembleKalmanFilter(EnsembleKalmanFilter):
+    """
+    Weighted likelihood Ensemble Kalman Filter
+    """
+    def __init__(
+        self, latent_fn, obs_fn, n_particles, c
+    ):
+        super().__init__(latent_fn, obs_fn, n_particles)
+        self.c = c
+
+    def _update_step(self, latent_pred, obs_pred, y):
+        latent_pred_hat = jnp.einsum("ji,jk->ki", latent_pred, self.matrix_deviation)
+        obs_pred_hat = jnp.einsum("ji,jk->ki", obs_pred, self.matrix_deviation)
+
+        Mk = jnp.einsum("ji,jk->ik", latent_pred_hat, obs_pred_hat) / (self.n_particles - 1)
+        Sk = jnp.einsum("ji,jk->ik", obs_pred_hat, obs_pred_hat) / (self.n_particles - 1)
+        K = jnp.linalg.solve(Sk, Mk)
+
+        errs = y - obs_pred
+        wt = jnp.sqrt(jnp.power(errs, 2).mean(axis=0)) < self.c
+        latent = latent_pred + jnp.einsum("ij,kj->ki", K, wt * errs)
+
+        return latent
