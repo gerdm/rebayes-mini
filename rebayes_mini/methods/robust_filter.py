@@ -415,13 +415,13 @@ class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
     """
     def __init__(
         self, fn_latent, fn_observed, dynamics_covariance, observation_covariance,
-        alpha, beta, tol_inlier, tol_inner
+        alpha, beta, tol_inlier, n_inner
     ):
         super().__init__(fn_latent, fn_observed, dynamics_covariance, observation_covariance)
         self.alpha0 = alpha
         self.beta0 = beta
         self.tol_inlier = tol_inlier
-        self.tol_inner = tol_inner
+        self.n_inner = n_inner
 
 
     def init_bel(self, mean, cov=1.0):
@@ -522,9 +522,11 @@ class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
     def step(self, bel, xs, callback_fn):
         xt, yt = xs
         bel_pred = self._predict_step(bel)
-        bel = bel_pred.replace(pr_inlier=1.0)
+        bel = bel_pred.replace(pr_inlier=1.0, tau=1.0)
         _inner = partial(self._inner_update, bel_pred=bel_pred, y=yt, x=xt)
-        bel_update = jax.lax.fori_loop(0, 10, _inner, bel)
+        bel_update = jax.lax.fori_loop(0, self.n_inner, _inner, bel)
+        # i = 0
+        # bel_update, i = jax.lax.while_loop(lambda xs: xs[0].tau > self.tol_inner, _inner, (bel, i))
 
         output = callback_fn(bel_update, bel_pred, yt, xt)
         return bel_update, output
