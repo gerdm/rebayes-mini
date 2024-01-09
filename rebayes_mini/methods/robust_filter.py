@@ -2,10 +2,19 @@ import jax
 import chex
 import jax.numpy as jnp
 from functools import partial
-from jax.flatten_util import ravel_pytree
 from jax.scipy.special import digamma
 from rebayes_mini.methods.gauss_filter import KalmanFilter, ExtendedKalmanFilter
-from rebayes_mini import callbacks
+
+@chex.dataclass
+class OutlierEKFState:
+    """
+    State of the Outlier Detection EKF
+    """
+    mean: chex.Array
+    cov: chex.Array
+    scale: float
+    dof: float
+    pr_inlier: float # expectation of the probability of being an inlier
 
 
 @chex.dataclass
@@ -250,7 +259,7 @@ class RobustStFilter(ExtendedKalmanFilter):
     
     def _compute_D_term(self, bel, bel_pred, y, x):
         """
-        Equation (15) 
+        Equation (31) 
         """
         Ht = self.jac_obs(bel_pred.mean, x)
         ht = self.vobs_fn(bel_pred.mean, x)
@@ -395,3 +404,80 @@ class ExtendedThresholdedKalmanFilter(ExtendedKalmanFilter):
 
         output = callback_fn(bel_update, bel_pred, yt, xt)
         return bel_update, output
+
+
+class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
+    """
+    Wang, H., Li, H., Fang, J., & Wang, H. (2018).
+    Robust Gaussian Kalman filter with outlier detection.
+    IEEE Signal Processing Letters, 25(8), 1236-1240.
+    """
+    def __init__(
+        self, fn_latent, fn_observed, dynamics_covariance, observation_covariance,
+        alpha, beta, tol_inlier, tol_inner
+    ):
+        super().__init__(fn_latent, fn_observed, dynamics_covariance, observation_covariance)
+        self.alpha0 = alpha
+        self.beta0 = beta
+        self.tol_inlier = tol_inlier
+        self.tol_inner = tol_inner
+
+        raise NotImplementedError
+    
+    def _expectation_proba_outlier(self, bel, y, x):
+        """
+        Expectation for pi --- density for the outlier probablity
+        """
+        elog_pr = digamma(self.alpha) - digamma(self.alpha + self.beta + 1) # (29)
+        elog_1mpr = digamma(self.beta) - digamma(self.alpha + self.beta + 1) # (30)
+        return elog_pr, elog_1mpr
+    
+    def _update_expectation_inlier(self, bel, y, x):
+        """
+        Expectation of the variational approximation for whether
+        an observation is an outlier --- (31)
+        """
+        B = self._compute_B_term(bel, y, x)
+        Rt_inv = jnp.linalg.inv(self.observation_covariance)
+
+        # expectations for log(pi) and log(1 - pi)
+        elog_pi, elog_1mpi = self._expectation_proba_outlier(bel, y, x) # (29), (30)
+
+        logpr_inlier =  elog_pi - jnp.einsum("ij,ji->", B, Rt_inv) / 2 # (27)
+        logpr_outlier = elog_1mpi
+        log_norm_cst = -jnp.logaddexp(logpr_inlier, logpr_outlier) # (28)
+
+        expectation = jnp.exp(logpr_inlier + log_norm_cst) # (31)
+        return expectation
+    
+    def _is_outlier(self, pr_inlier):
+        return pr_inlier < self.tol_inlier
+    
+    def _update_with_outlier(self, bel_pred, y, x):
+        return bel_pred
+    
+    def _update_with_inlier(self, bel_pred, y, x):
+        ...
+
+    def _iner_update(self, bel, bel_pred, y, x):
+        # update posterior mean and covariance
+        bel = jax.lax.cond(
+            self._is_outlier(bel.pr_inlier),
+            lambda: self._update_with_outlier(bel_pred, y, x),
+            lambda: self._update_with_inlier(bel_pred, y, x)
+        )
+        # TODO: fill the rest
+
+    def _compute_B_term(self, bel, bel_pred, y, x):
+        """
+        Equation (26, line below)
+        """
+        Ht = self.jac_obs(bel_pred.mean, x)
+        ht = self.vobs_fn(bel_pred.mean, x)
+        yhat_c = ht + Ht @ (bel.mean - bel_pred.mean)
+        err = y - yhat_c
+        B = jnp.outer(err, err) + Ht @ bel.covariance @ Ht.T
+        return B
+    
+    def step(self, bel, xs, callback_fn):
+        ...
