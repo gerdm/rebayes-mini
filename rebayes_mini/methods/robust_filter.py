@@ -12,9 +12,10 @@ class OutlierEKFState:
     """
     mean: chex.Array
     cov: chex.Array
-    scale: float
-    dof: float
+    alpha: float
+    beta: float
     pr_inlier: float # expectation of the probability of being an inlier
+    tau: float # relative change in the mean
 
 
 @chex.dataclass
@@ -422,22 +423,33 @@ class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
         self.tol_inlier = tol_inlier
         self.tol_inner = tol_inner
 
-        raise NotImplementedError
+
+    def init_bel(self, mean, cov=1.0):
+        mean, cov, dim_latent = self._init_components(mean, cov)
+
+        return OutlierEKFState(
+            mean=mean,
+            cov=cov,
+            alpha=1.0,
+            beta=1.0,
+            pr_inlier=1.0,
+            tau=0.0,
+        )
     
     def _expectation_proba_outlier(self, bel, y, x):
         """
         Expectation for pi --- density for the outlier probablity
         """
-        elog_pr = digamma(self.alpha) - digamma(self.alpha + self.beta + 1) # (29)
-        elog_1mpr = digamma(self.beta) - digamma(self.alpha + self.beta + 1) # (30)
+        elog_pr = digamma(bel.alpha) - digamma(bel.alpha + bel.beta + 1) # (29)
+        elog_1mpr = digamma(bel.beta + 1) - digamma(bel.alpha + bel.beta + 1) # (30)
         return elog_pr, elog_1mpr
     
-    def _update_expectation_inlier(self, bel, y, x):
+    def _update_expectation_inlier(self, bel, bel_pred, y, x):
         """
         Expectation of the variational approximation for whether
         an observation is an outlier --- (31)
         """
-        B = self._compute_B_term(bel, y, x)
+        B = self._compute_B_term(bel, bel_pred, y, x)
         Rt_inv = jnp.linalg.inv(self.observation_covariance)
 
         # expectations for log(pi) and log(1 - pi)
@@ -453,20 +465,48 @@ class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
     def _is_outlier(self, pr_inlier):
         return pr_inlier < self.tol_inlier
     
-    def _update_with_outlier(self, bel_pred, y, x):
-        return bel_pred
+    def _update_with_outlier(self, bel):
+        return bel
     
-    def _update_with_inlier(self, bel_pred, y, x):
-        ...
+    def _update_with_inlier(self, bel, y, x, e_inlier):
+        Ht = self.jac_obs(bel.mean, x)
+        Rt_inv = jnp.linalg.inv(self.observation_covariance) * e_inlier
+        yhat = self.vobs_fn(bel.mean, x)
+        prec_update = jnp.linalg.inv(bel.cov) + Ht.T @ Rt_inv @ Ht
+        cov_update = jnp.linalg.inv(prec_update)
+        Kt = cov_update @ Ht.T @ Rt_inv
+        mean_update = bel.mean + Kt @ (y - yhat)
 
-    def _iner_update(self, bel, bel_pred, y, x):
+        bel = bel.replace(mean=mean_update, cov=cov_update)
+        return bel
+
+    def _inner_update(self, i, bel, bel_pred, y, x):
+        e_inlier = bel.pr_inlier
         # update posterior mean and covariance
+        # with (18, 19) or (24, 25)
+        mean_old = bel.mean
+
         bel = jax.lax.cond(
             self._is_outlier(bel.pr_inlier),
-            lambda: self._update_with_outlier(bel_pred, y, x),
-            lambda: self._update_with_inlier(bel_pred, y, x)
+            lambda: self._update_with_outlier(bel_pred),
+            lambda: self._update_with_inlier(bel_pred, y, x, e_inlier)
         )
-        # TODO: fill the rest
+
+        expectation_inlier = self._update_expectation_inlier(bel, bel_pred, y, x) # (31)
+        alpha_new = self.alpha0 + expectation_inlier
+        beta_new = self.beta0 + 1 - expectation_inlier
+
+
+        tau = jnp.linalg.norm(bel.mean - mean_old) / jnp.linalg.norm(mean_old)
+        bel = bel.replace(
+            pr_inlier=expectation_inlier,
+            alpha=alpha_new,
+            beta=beta_new,
+            tau=tau,
+        )
+
+        return bel
+        
 
     def _compute_B_term(self, bel, bel_pred, y, x):
         """
@@ -476,8 +516,15 @@ class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
         ht = self.vobs_fn(bel_pred.mean, x)
         yhat_c = ht + Ht @ (bel.mean - bel_pred.mean)
         err = y - yhat_c
-        B = jnp.outer(err, err) + Ht @ bel.covariance @ Ht.T
+        B = jnp.outer(err, err) # + Ht @ bel.cov @ Ht.T
         return B
     
     def step(self, bel, xs, callback_fn):
-        ...
+        xt, yt = xs
+        bel_pred = self._predict_step(bel)
+        bel = bel_pred.replace(pr_inlier=1.0)
+        _inner = partial(self._inner_update, bel_pred=bel_pred, y=yt, x=xt)
+        bel_update = jax.lax.fori_loop(0, 10, _inner, bel)
+
+        output = callback_fn(bel_update, bel_pred, yt, xt)
+        return bel_update, output
