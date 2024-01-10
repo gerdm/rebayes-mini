@@ -189,14 +189,18 @@ class IMQFilter:
         Rt = jnp.atleast_2d(self.observation_covariance)
         weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
 
-        Rt_inv = jnp.linalg.inv(Rt)
         Ht = self.grad_link_fn(pmean_pred, xt)
-        pprec = jnp.linalg.inv(pcov_pred) + weighting_term * Ht.T @ Rt_inv @ Ht
-        pcov = jnp.linalg.inv(pprec)
-        Kt = pcov @ Ht.T @ Rt_inv
-        pmean = pmean_pred + weighting_term * Kt @ err
+        St = Ht @ pcov_pred @ Ht.T + Rt / weighting_term
+        Kt = jnp.linalg.solve(St, Ht @ pcov_pred).T
 
-        bel_new = bel.replace(mean=pmean, covariance=pcov, weighting_term=weighting_term)
+        mean_update = pmean_pred + weighting_term * Kt @ err
+        cov_update = pcov_pred - Kt @ St @ Kt.T
+        bel_new = bel.replace(
+            mean=mean_update,
+            covariance=cov_update,
+            weighting_term=weighting_term,
+        )
+
         output = callback_fn(bel_new, bel, yt, xt)
         return bel_new, output
 

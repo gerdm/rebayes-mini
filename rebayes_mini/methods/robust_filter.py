@@ -382,15 +382,18 @@ class ExtendedThresholdedKalmanFilter(ExtendedKalmanFilter):
             err=0.0
         )
 
+
     def _update_step(self, bel, y, x):
-        Ht = self.jac_obs(bel.mean, x)
-        Rt_inv = jnp.linalg.inv(self.observation_covariance)
-        yhat = self.vobs_fn(bel.mean, x)
-        prec_update = jnp.linalg.inv(bel.cov) + Ht.T @ Rt_inv @ Ht
-        cov_update = jnp.linalg.inv(prec_update)
-        Kt = cov_update @ Ht.T @ Rt_inv
-        err = y - yhat
+        Ht = self.jac_obs(bel.mean, x)       
+        Rt = self.observation_covariance
+
+        St = Ht @ bel.cov @ Ht.T + Rt
+        Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
+
+        err = y - self.vobs_fn(bel.mean, x)
         mean_update = bel.mean + Kt @ err
+        cov_update = bel.cov - Kt @ St @ Kt.T
+
         bel = bel.replace(mean=mean_update, cov=cov_update)
         return bel, err
 
@@ -469,13 +472,15 @@ class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
         return bel
     
     def _update_with_inlier(self, bel, y, x, e_inlier):
-        Ht = self.jac_obs(bel.mean, x)
-        Rt_inv = jnp.linalg.inv(self.observation_covariance) * e_inlier
-        yhat = self.vobs_fn(bel.mean, x)
-        prec_update = jnp.linalg.inv(bel.cov) + Ht.T @ Rt_inv @ Ht
-        cov_update = jnp.linalg.inv(prec_update)
-        Kt = cov_update @ Ht.T @ Rt_inv
-        mean_update = bel.mean + Kt @ (y - yhat)
+        Ht = self.jac_obs(bel.mean, x)       
+        Rt = self.observation_covariance / e_inlier
+
+        St = Ht @ bel.cov @ Ht.T + Rt
+        Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
+
+        err = y - self.vobs_fn(bel.mean, x)
+        mean_update = bel.mean + Kt @ err
+        cov_update = bel.cov - Kt @ St @ Kt.T
 
         bel = bel.replace(mean=mean_update, cov=cov_update)
         return bel

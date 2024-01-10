@@ -120,13 +120,14 @@ class ExtendedKalmanFilter:
         return bel
 
     def _update_step(self, bel, y, x):
-        Ht = self.jac_obs(bel.mean, x)
-        Rt_inv = jnp.linalg.inv(self.observation_covariance)
-        yhat = self.vobs_fn(bel.mean, x)
-        prec_update = jnp.linalg.inv(bel.cov) + Ht.T @ Rt_inv @ Ht
-        cov_update = jnp.linalg.inv(prec_update)
-        Kt = cov_update @ Ht.T @ Rt_inv
-        mean_update = bel.mean + Kt @ (y - yhat)
+        Ht = self.jac_obs(bel.mean, x)       
+        Rt = self.observation_covariance
+
+        St = Ht @ bel.cov @ Ht.T + Rt
+        Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
+
+        mean_update = bel.mean + Kt @ (y - self.vobs_fn(bel.mean, x))
+        cov_update = bel.cov - Kt @ St @ Kt.T
 
         bel = bel.replace(mean=mean_update, cov=cov_update)
         return bel
