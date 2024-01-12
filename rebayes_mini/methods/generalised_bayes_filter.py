@@ -193,7 +193,7 @@ class IMQFilter:
         St = Ht @ pcov_pred @ Ht.T + Rt / weighting_term
         Kt = jnp.linalg.solve(St, Ht @ pcov_pred).T
 
-        mean_update = pmean_pred + weighting_term * Kt @ err
+        mean_update = pmean_pred + Kt @ err
         cov_update = pcov_pred - Kt @ St @ Kt.T
         bel_new = bel.replace(
             mean=mean_update,
