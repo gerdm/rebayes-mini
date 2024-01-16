@@ -126,7 +126,8 @@ class ExtendedKalmanFilter:
         St = Ht @ bel.cov @ Ht.T + Rt
         Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
 
-        mean_update = bel.mean + Kt @ (y - self.vobs_fn(bel.mean, x))
+        err = y - self.vobs_fn(bel.mean, x)
+        mean_update = bel.mean + Kt @ err
         cov_update = bel.cov - Kt @ St @ Kt.T
 
         bel = bel.replace(mean=mean_update, cov=cov_update)
