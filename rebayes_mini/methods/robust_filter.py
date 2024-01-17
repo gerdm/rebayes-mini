@@ -368,42 +368,24 @@ class ExtendedKalmanFilterMD(ExtendedKalmanFilter):
     ):
         super().__init__(fn_latent, fn_observed, dynamics_covariance, observation_covariance)
         self.threshold = threshold
-
-    def init_bel(self, mean, cov=1.0):
-        mean, cov, dim_latent = self._init_components(mean, cov)
-
-        return KFTState(
-            mean=mean,
-            cov=cov,
-            err=0.0
-        )
-
+        self.observation_precision = jnp.linalg.inv(self.observation_covariance)
 
     def _update_step(self, bel, y, x):
+        err = y - self.vobs_fn(bel.mean, x)
+        mahalanobis_distance = jnp.sqrt(jnp.einsum("j,jk,k->", err, self.observation_precision, err))
+        weighting_term = (mahalanobis_distance < self.threshold).astype(float)
+
         Ht = self.jac_obs(bel.mean, x)
         Rt = self.observation_covariance
 
         St = Ht @ bel.cov @ Ht.T + Rt
         Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
 
-        err = y - self.vobs_fn(bel.mean, x)
-        mean_update = bel.mean + Kt @ err
-        cov_update = bel.cov - Kt @ St @ Kt.T
+        mean_update = bel.mean + weighting_term * Kt @ err
+        cov_update = bel.cov - weighting_term * Kt @ St @ Kt.T
 
         bel = bel.replace(mean=mean_update, cov=cov_update)
-        return bel, err
-
-    def step(self, bel, xs, callback_fn):
-        xt, yt = xs
-        bel_pred = self._predict_step(bel)
-        bel_update, err = self._update_step(bel_pred, yt, xt)
-        err_distance = jnp.sqrt(jnp.einsum("j,jk,k->", err, jnp.linalg.inv(self.observation_covariance), err))
-
-        bel_update = jax.lax.cond(err_distance < self.threshold, lambda: bel_update, lambda: bel_pred)
-        bel_update = bel_update.replace(err=err_distance)
-
-        output = callback_fn(bel_update, bel_pred, yt, xt)
-        return bel_update, output
+        return bel
 
 
 class ExtendedKalmanFilterIMQ(ExtendedKalmanFilter):
