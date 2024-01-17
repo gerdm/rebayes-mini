@@ -78,7 +78,7 @@ class WeightedObsCovFilter(KalmanFilter):
         self.prior_rate = prior_rate # beta term
         self.n_inner = n_inner
         self.n_samples = n_samples
-    
+
     def init_bel(self, mean, covariance, key=314):
         state = WOCFState(
             mean=mean,
@@ -87,7 +87,7 @@ class WeightedObsCovFilter(KalmanFilter):
             key=jax.random.PRNGKey(key)
         )
         return state
-    
+
     @partial(jax.vmap, in_axes=(None, 0, None, None, None))
     def _err_term(self, mean, y, x, R_inv):
         """
@@ -116,7 +116,7 @@ class WeightedObsCovFilter(KalmanFilter):
             key=keyt
         )
         return bel
-    
+
     def step(self, bel, y, x, callback_fn):
         partial_update = partial(self._update, y=y, x=x, bel_prev=bel)
         bel_update = jax.lax.fori_loop(0, self.n_inner, partial_update, bel)
@@ -165,7 +165,7 @@ class RobustKalmanFilter(KalmanFilter):
     """
     See:
     G. Agamennoni, J. I. Nieto and E. M. Nebot,
-    "Approximate Inference in State-Space Models With Heavy-Tailed Noise," 
+    "Approximate Inference in State-Space Models With Heavy-Tailed Noise,"
     in IEEE Transactions on Signal Processing, vol. 60, no. 10, pp. 5024-5037, Oct. 2012,
     doi: 10.1109/TSP.2012.2208106.
     """
@@ -257,10 +257,10 @@ class RobustStFilter(ExtendedKalmanFilter):
 
         bel = bel.replace(mean=mean_update, covariance=cov_update)
         return bel
-    
+
     def _compute_D_term(self, bel, bel_pred, y, x):
         """
-        Equation (31) 
+        Equation (31)
         """
         Ht = self.jac_obs(bel_pred.mean, x)
         ht = self.vobs_fn(bel_pred.mean, x)
@@ -268,7 +268,7 @@ class RobustStFilter(ExtendedKalmanFilter):
         err = y - yhat_c
         D = jnp.outer(err, err) + Ht @ bel.covariance @ Ht.T
         return D
-    
+
     def _compute_initial_expectations(self, bel, bel_pred, y, x):
         """
         Compute initial expectations using (28) - (32)
@@ -281,7 +281,7 @@ class RobustStFilter(ExtendedKalmanFilter):
 
         expectations = expected_obs_prec, expected_weighting_term, expected_dof
         return expectations
-    
+
     def _predict_step(self, bel):
         # Time update
         # bel = super()._predict_step(bel) # EKF predict step
@@ -296,7 +296,7 @@ class RobustStFilter(ExtendedKalmanFilter):
         # Measurement update
         dof_shape = dof_shape + 0.5
         weighting_shape = 0.5 * dof_shape / dof_rate
-        weighting_rate = 0.5 * dof_shape / dof_rate 
+        weighting_rate = 0.5 * dof_shape / dof_rate
 
         bel = bel.replace(
             obs_cov_dof=obs_cov_dof,
@@ -384,7 +384,7 @@ class ExtendedThresholdedKalmanFilter(ExtendedKalmanFilter):
 
 
     def _update_step(self, bel, y, x):
-        Ht = self.jac_obs(bel.mean, x)       
+        Ht = self.jac_obs(bel.mean, x)
         Rt = self.observation_covariance
 
         St = Ht @ bel.cov @ Ht.T + Rt
@@ -464,7 +464,7 @@ class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
             pr_inlier=1.0,
             tau=0.0,
         )
-    
+
     def _expectation_proba_outlier(self, bel, y, x):
         """
         Expectation for pi --- density for the outlier probablity
@@ -472,7 +472,7 @@ class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
         elog_pr = digamma(bel.alpha) - digamma(bel.alpha + bel.beta + 1) # (29)
         elog_1mpr = digamma(bel.beta + 1) - digamma(bel.alpha + bel.beta + 1) # (30)
         return elog_pr, elog_1mpr
-    
+
     def _update_expectation_inlier(self, bel, bel_pred, y, x):
         """
         Expectation of the variational approximation for whether
@@ -490,15 +490,15 @@ class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
 
         expectation = jnp.exp(logpr_inlier + log_norm_cst) # (31)
         return expectation
-    
+
     def _is_outlier(self, pr_inlier):
         return pr_inlier < self.tol_inlier
-    
+
     def _update_with_outlier(self, bel):
         return bel
-    
+
     def _update_with_inlier(self, bel, y, x, e_inlier):
-        Ht = self.jac_obs(bel.mean, x)       
+        Ht = self.jac_obs(bel.mean, x)
         Rt = self.observation_covariance / e_inlier
 
         St = Ht @ bel.cov @ Ht.T + Rt
@@ -537,7 +537,7 @@ class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
         )
 
         return bel
-        
+
 
     def _compute_B_term(self, bel, bel_pred, y, x):
         """
@@ -549,7 +549,7 @@ class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
         err = y - yhat_c
         B = jnp.outer(err, err) # + Ht @ bel.cov @ Ht.T
         return B
-    
+
     def step(self, bel, xs, callback_fn):
         xt, yt = xs
         bel_pred = self._predict_step(bel)
