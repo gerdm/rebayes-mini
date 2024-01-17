@@ -125,7 +125,7 @@ class WeightedObsCovFilter(KalmanFilter):
         return bel_update, output
 
 
-class ExtendedRobustKalmanFilter(ExtendedKalmanFilter):
+class ExtendedKalmanFilterInverseWishart(ExtendedKalmanFilter):
     """
     Agamenoni, G., Nieto, J.I., Nebot, E.M. (2012).
     """
@@ -161,7 +161,7 @@ class ExtendedRobustKalmanFilter(ExtendedKalmanFilter):
         return bel_update, output
 
 
-class RobustKalmanFilter(KalmanFilter):
+class KalmanFilterInverseWishart(KalmanFilter):
     """
     See:
     G. Agamennoni, J. I. Nieto and E. M. Nebot,
