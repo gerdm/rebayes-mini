@@ -410,6 +410,32 @@ class ExtendedThresholdedKalmanFilter(ExtendedKalmanFilter):
         return bel_update, output
 
 
+class ExtendedKalmanFilterIMQ(ExtendedKalmanFilter):
+    def __init__(
+        self, latent_fn, obs_fn, dynamics_covariance, observation_covariance,
+        soft_threshold
+    ):
+        super().__init__(latent_fn, obs_fn, dynamics_covariance, observation_covariance)
+        self.soft_threshold = soft_threshold
+
+
+    def _update_step(self, bel, y, x):
+        err = y - self.vobs_fn(bel.mean, x)
+        weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
+
+        Ht = self.jac_obs(bel.mean, x)
+        Rt = self.observation_covariance / weighting_term
+
+        St = Ht @ bel.cov @ Ht.T + Rt
+        Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
+
+        mean_update = bel.mean + Kt @ err
+        cov_update = bel.cov - Kt @ St @ Kt.T
+
+        bel = bel.replace(mean=mean_update, cov=cov_update)
+        return bel
+
+
 class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
     """
     Wang, H., Li, H., Fang, J., & Wang, H. (2018).
