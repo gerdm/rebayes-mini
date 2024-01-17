@@ -432,7 +432,7 @@ class ExtendedKalmanFilterIMQ(ExtendedKalmanFilter):
         return bel
 
 
-class OutlierDetectionExtendedKalmanFilter(ExtendedKalmanFilter):
+class ExtendedKalmanFilterBernoulli(ExtendedKalmanFilter):
     """
     Wang, H., Li, H., Fang, J., & Wang, H. (2018).
     Robust Gaussian Kalman filter with outlier detection.
