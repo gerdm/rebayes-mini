@@ -362,11 +362,7 @@ class RobustStFilter(ExtendedKalmanFilter):
         return bel_update, output
 
 
-class ExtendedThresholdedKalmanFilter(ExtendedKalmanFilter):
-    """
-    Heuristic-based thresholding of the update
-    first presented in Ting et al. 2007
-    """
+class ExtendedKalmanFilterMD(ExtendedKalmanFilter):
     def __init__(
         self, fn_latent, fn_observed, dynamics_covariance, observation_covariance, threshold
     ):
