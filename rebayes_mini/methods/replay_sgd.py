@@ -25,6 +25,7 @@ class FifoTrainState(TrainState):
 
 
     def apply_buffers(self, X, y):
+        # TODO: rename to update_buffers
         n_count = self.num_obs
         buffer_X = self._update_buffer(n_count, self.buffer_X, X)
         buffer_y = self._update_buffer(n_count, self.buffer_y, y)
@@ -98,7 +99,6 @@ class FifoSGD:
         yhat = self.apply_fn(bel.params, X)
         return yhat
 
-    @partial(jax.jit, static_argnums=(0,))
     def _train_step(
         self,
         bel: FifoTrainState,
@@ -108,7 +108,6 @@ class FifoSGD:
         bel = bel.apply_gradients(grads=grads)
         return loss, bel
 
-    @partial(jax.jit, static_argnums=(0,))
     def update_state(self, bel, Xt, yt):
         bel = bel.apply_buffers(Xt, yt)
 
