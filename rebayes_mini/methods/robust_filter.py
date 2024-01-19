@@ -2,7 +2,9 @@ import jax
 import chex
 import jax.numpy as jnp
 from functools import partial
+from jax.flatten_util import ravel_pytree
 from jax.scipy.special import digamma
+from rebayes_mini.methods.replay_sgd import FifoSGD
 from rebayes_mini.methods.gauss_filter import KalmanFilter, ExtendedKalmanFilter
 
 @chex.dataclass
@@ -539,3 +541,43 @@ class ExtendedKalmanFilterBernoulli(ExtendedKalmanFilter):
 
         output = callback_fn(bel_update, bel_pred, yt, xt)
         return bel_update, output
+
+
+class FifoSGDIMQ(FifoSGD):
+    def __init__(
+        self, apply_fn, tx, buffer_size, dim_features, dim_output, soft_threshold, n_inner=1,
+    ):
+        super().__init__(apply_fn, self.lossfn, tx, buffer_size, dim_features, dim_output, n_inner)
+        self.soft_threshold = soft_threshold
+
+    def lossfn(self, params, counter, x, y, applyfn, weighting_term):
+        yhat = applyfn(params, x)
+        params_flat = ravel_pytree(params)[0]
+        loss = jnp.sum(counter * (y - yhat) ** 2) / counter.sum()
+        loss = loss * weighting_term 
+        return loss
+
+    def inverse_multi_quad(self, bel, y, x):
+        yhat = self.apply_fn(bel.params, x) # prior predictive
+        err = y - yhat
+        weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
+        return weighting_term
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _train_step(self, bel, weighting_term):
+        X, y = bel.buffer_X, bel.buffer_y
+        loss, grads = self.loss_grad(bel.params, bel.counter, X, y, bel.apply_fn, weighting_term)
+        bel = bel.apply_gradients(grads=grads)
+        return loss, bel
+
+    def update_state(self, bel, Xt, yt):
+        weighting_term = self.inverse_multi_quad(bel, yt, Xt)
+        bel = bel.apply_buffers(Xt, yt)
+
+        def partial_step(_, bel):
+            _, bel = self._train_step(bel, weighting_term)
+            return bel
+        bel = jax.lax.fori_loop(0, self.n_inner - 1, partial_step, bel)
+        # Do not count inner steps as part of the outer step
+        _, bel = self._train_step(bel, weighting_term)
+        return bel
