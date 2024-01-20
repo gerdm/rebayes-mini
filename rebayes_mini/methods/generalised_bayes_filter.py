@@ -135,6 +135,7 @@ class IMQFilter:
     Inverse-Multi-Quadratic filter
     for a Gaussian state space model with
     known observation covariance
+    TODO: deprecate
     """
     def __init__(
         self, apply_fn, dynamics_covariance, observation_covariance, soft_threshold,
