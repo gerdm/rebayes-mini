@@ -186,29 +186,39 @@ class ExpfamFilter:
     @partial(jax.jit, static_argnums=(0,))
     def covariance(self, eta):
         return jax.hessian(self.log_partition)(eta).squeeze()
+    
+    def _predict_step(self, bel):
+        # TODO: add dynamics' function
+        nparams = len(bel.mean)
+        I = jnp.eye(nparams)
+        pmean_pred = bel.mean
+        pcov_pred = bel.cov + self.dynamics_covariance * I
+        bel = bel.replace(mean=pmean_pred, cov=pcov_pred)
+        return bel
+
+    def _update_step(self, bel, y, x):
+        eta = self.link_fn(bel.mean, x).astype(float)
+        yhat = self.mean(eta)
+        y = self.suff_statistic(y)
+        err = y - yhat
+
+        Rt = jnp.atleast_2d(self.covariance(eta))
+        Ht = Rt @ self.grad_link_fn(bel.mean, x)
+        St = Ht @ bel.cov @ Ht.T + Rt
+        Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
+
+        mean_update = bel.mean + Kt @ err
+        cov_update = bel.cov - Kt @ St @ Kt.T
+        bel = bel.replace(mean=mean_update, cov=cov_update)
+        return bel
 
     def step(self, bel, xs, callback_fn):
-        xt, yt = xs
-        pmean_pred = bel.mean
-        nparams = len(pmean_pred)
-        I = jnp.eye(nparams)
-        pcov_pred = bel.cov + self.dynamics_covariance * I
+        x, y = xs
+        bel_pred = self._predict_step(bel)
+        bel_update = self._update_step(bel_pred, y, x)
 
-        eta = self.link_fn(bel.mean, xt).astype(float)
-        yhat = self.mean(eta)
-        err = self.suff_statistic(yt) - yhat
-        Rt = jnp.atleast_2d(self.covariance(eta))
-
-        Ht = Rt @ self.grad_link_fn(pmean_pred, xt)
-        St = Ht @ pcov_pred @ Ht.T + Rt
-        Kt = jnp.linalg.solve(St, Ht @ pcov_pred).T
-
-        pcov = (I - Kt @ Ht) @ pcov_pred
-        pmean = pmean_pred + (Kt @ err).squeeze()
-
-        bel_new = bel.replace(mean=pmean, cov=pcov)
-        output = callback_fn(bel_new, bel, yt, xt)
-        return bel_new, output
+        output = callback_fn(bel_update, bel_pred, y, x)
+        return bel_update, output
 
     def scan(self, bel, y, X, callback_fn=None):
         xs = (X, y)
