@@ -83,3 +83,32 @@ class WLEnsembleKalmanFilter(EnsembleKalmanFilter):
         latent = latent_pred + jnp.einsum("ij,kj->ki", K, wt * errs)
 
         return latent
+
+
+class HubEnsembleKalmanFilter(EnsembleKalmanFilter):
+    """
+    Huberised likelihood Ensemble Kalman Filter
+    """
+    def __init__(
+        self, latent_fn, obs_fn, n_particles, clipping_height
+    ):
+        super().__init__(latent_fn, obs_fn, n_particles)
+        self.clipping_height = clipping_height
+    
+
+    def huberisation(self, x):
+        return jnp.clip(x, -self.clipping_height, self.clipping_height)
+
+    def _update_step(self, latent_pred, obs_pred, y):
+        latent_pred_hat = jnp.einsum("ji,jk->ki", latent_pred, self.matrix_deviation)
+        obs_pred_hat = jnp.einsum("ji,jk->ki", obs_pred, self.matrix_deviation)
+
+        Mk = jnp.einsum("ji,jk->ik", latent_pred_hat, obs_pred_hat) / (self.n_particles - 1)
+        Sk = jnp.einsum("ji,jk->ik", obs_pred_hat, obs_pred_hat) / (self.n_particles - 1)
+        K = jnp.linalg.solve(Sk, Mk)
+
+        errs = y - obs_pred
+        errs = self.huberisation(errs)
+        latent = latent_pred + jnp.einsum("ij,kj->ki", K, errs)
+
+        return latent
