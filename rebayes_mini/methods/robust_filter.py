@@ -5,7 +5,7 @@ from functools import partial
 from jax.flatten_util import ravel_pytree
 from jax.scipy.special import digamma
 from rebayes_mini.methods.replay_sgd import FifoSGD
-from rebayes_mini.methods.gauss_filter import KalmanFilter, ExtendedKalmanFilter
+from rebayes_mini.methods.gauss_filter import KalmanFilter, ExtendedKalmanFilter, BernoulliFilter
 
 @chex.dataclass
 class OutlierEKFState:
@@ -580,4 +580,29 @@ class FifoSGDIMQ(FifoSGD):
         bel = jax.lax.fori_loop(0, self.n_inner - 1, partial_step, bel)
         # Do not count inner steps as part of the outer step
         _, bel = self._train_step(bel, weighting_term)
+        return bel
+
+
+class RobustBernoulliFilter(BernoulliFilter):
+    def __init__(self, apply_fn, dynamics_covariance, c):
+        super().__init__(apply_fn, dynamics_covariance)
+        self.c = c
+
+    def _update_step(self, bel, y, x):
+        eta = self.link_fn(bel.mean, x).astype(float)
+        yhat = self.mean(eta)
+        y = self.suff_statistic(y)
+        err = y - yhat
+
+        weight = yhat ** y * (1 - yhat) ** (1 - y)
+        # val = y * jnp.log(yhat) + (1 - y) * jnp.log(1 - yhat)
+        # weight = (yhat ** y * (1 - yhat) ** (1 - y))
+        Rt = jnp.atleast_2d(self.covariance(eta))  / weight
+        Ht = Rt @ self.grad_link_fn(bel.mean, x)
+        St = Ht @ bel.cov @ Ht.T + Rt
+        Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
+
+        mean_update = bel.mean + Kt @ err
+        cov_update = bel.cov - Kt @ St @ Kt.T
+        bel = bel.replace(mean=mean_update, cov=cov_update)
         return bel
