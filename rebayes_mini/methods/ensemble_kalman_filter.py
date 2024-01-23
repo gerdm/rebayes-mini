@@ -22,10 +22,10 @@ class EnsembleKalmanFilter:
         keys_latent = jax.random.split(key_latent, self.n_particles)
         keys_obs = jax.random.split(key_obs, self.n_particles)       
 
-        particles_latent = jax.vmap(self.latent_fn, in_axes=(0, 0, None))(particles, keys_latent, X)
-        particles_obs = jax.vmap(self.obs_fn, in_axes=(0, 0, None))(particles_latent, keys_obs, X)
+        latent_pred = jax.vmap(self.latent_fn, in_axes=(0, 0, None))(particles, keys_latent, X)
+        obs_pred = jax.vmap(self.obs_fn, in_axes=(0, 0, None))(latent_pred, keys_obs, X)
 
-        return particles_latent, particles_obs
+        return latent_pred, obs_pred
     
     def _update_step(self, latent_pred, obs_pred, y):
         latent_pred_hat = jnp.einsum("ji,jk->ki", latent_pred, self.matrix_deviation)
@@ -60,7 +60,32 @@ class EnsembleKalmanFilter:
         return particles, hist
 
 
-class WLEnsembleKalmanFilter(EnsembleKalmanFilter):
+class WLEnsembleKalmanFilterSoft(EnsembleKalmanFilter):
+    """
+    Weighted likelihood Ensemble Kalman Filter
+    """
+    def __init__(
+        self, latent_fn, obs_fn, n_particles, c
+    ):
+        super().__init__(latent_fn, obs_fn, n_particles)
+        self.c = c
+
+    def _update_step(self, latent_pred, obs_pred, y):
+        latent_pred_hat = jnp.einsum("ji,jk->ki", latent_pred, self.matrix_deviation)
+        obs_pred_hat = jnp.einsum("ji,jk->ki", obs_pred, self.matrix_deviation)
+
+        Mk = jnp.einsum("ji,jk->ik", latent_pred_hat, obs_pred_hat) / (self.n_particles - 1)
+        Sk = jnp.einsum("ji,jk->ik", obs_pred_hat, obs_pred_hat) / (self.n_particles - 1)
+        K = jnp.linalg.solve(Sk, Mk)
+
+        errs = y - obs_pred
+        wt = jnp.sqrt(jnp.power(errs, 2)) < self.c
+        latent = latent_pred + jnp.einsum("ij,kj->ki", K, wt * errs)
+
+        return latent
+
+
+class WLEnsembleKalmanFilterHard(EnsembleKalmanFilter):
     """
     Weighted likelihood Ensemble Kalman Filter
     """
@@ -84,6 +109,56 @@ class WLEnsembleKalmanFilter(EnsembleKalmanFilter):
 
         return latent
 
+
+class WLEnsembleKalmanFilterResample(EnsembleKalmanFilter):
+    """
+    Weighted likelihood Ensemble Kalman Filter
+    """
+    def __init__(
+        self, latent_fn, obs_fn, n_particles, c
+    ):
+        super().__init__(latent_fn, obs_fn, n_particles)
+        self.c = c
+
+    @partial(jax.vmap, in_axes=(None, 0, 1, 1), out_axes=1)
+    def resample_from_column(self, key, particles, weights):
+        p_weights = jnp.ones(self.n_particles) / (self.n_particles - weights.sum())
+        rval = weights.argmax()
+        ix_where = jnp.where(weights, size=self.n_particles, fill_value=rval)
+        p_weights = p_weights.at[ix_where].set(0.0)
+        particles_resample = jax.random.choice(key, particles, shape=(self.n_particles,), p=p_weights)
+        new_particles =  particles * (1 - weights) + particles_resample * weights
+        
+        return new_particles
+
+    def _update_step(self, key, latent_pred, obs_pred, y):
+        latent_pred_hat = jnp.einsum("ji,jk->ki", latent_pred, self.matrix_deviation)
+        obs_pred_hat = jnp.einsum("ji,jk->ki", obs_pred, self.matrix_deviation)
+
+        Mk = jnp.einsum("ji,jk->ik", latent_pred_hat, obs_pred_hat) / (self.n_particles - 1)
+        Sk = jnp.einsum("ji,jk->ik", obs_pred_hat, obs_pred_hat) / (self.n_particles - 1)
+        K = jnp.linalg.solve(Sk, Mk)
+
+        errs = y - obs_pred
+        keys = jax.random.split(key, errs.shape[1])
+        wt = jnp.sqrt(jnp.power(errs, 2)) < self.c
+
+        obs_pred = self.resample_from_column(keys, obs_pred, wt)
+        errs = y - obs_pred
+        latent = latent_pred + jnp.einsum("ij,kj->ki", K, errs)
+
+        return latent
+
+    def step(self, particles, obs, key, callback_fn):
+        yt, xt, t = obs
+        key = jax.random.fold_in(key, t)
+        key_pred, key_update = jax.random.split(key)
+        particles_latent_pred, particles_obs_pred = self._predict_step(particles, key_pred, xt)
+        particles_latent = self._update_step(key_update, particles_latent_pred, particles_obs_pred, yt)
+
+        out = callback_fn(particles_latent, particles_latent_pred, yt, xt)
+
+        return particles_latent, out
 
 class HubEnsembleKalmanFilter(EnsembleKalmanFilter):
     """
