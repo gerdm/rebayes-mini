@@ -498,7 +498,7 @@ class ExtendedKalmanFilterBernoulli(ExtendedKalmanFilter):
         mean_old = bel.mean
 
         bel = jax.lax.cond(
-            self._is_outlier(bel.pr_inlier),
+            self._is_outlier(e_inlier),
             lambda: self._update_with_outlier(bel_pred),
             lambda: self._update_with_inlier(bel_pred, y, x, e_inlier)
         )
