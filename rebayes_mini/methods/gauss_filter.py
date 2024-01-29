@@ -268,7 +268,7 @@ class MultinomialFilter(ExpfamFilter):
     @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
         eta = jnp.append(eta, 0.0)
-        return jax.nn.logsumexp(eta).sum() * 2
+        return jax.nn.logsumexp(eta).sum()
 
     @partial(jax.jit, static_argnums=(0,))
     def _suff_stat(self, y):
