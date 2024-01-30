@@ -181,17 +181,6 @@ class WLEnsembleKalmanFilterResample(EnsembleKalmanFilter):
 
         return latent
 
-    def step(self, particles, obs, key, callback_fn):
-        yt, xt, t = obs
-        key = jax.random.fold_in(key, t)
-        key_pred, key_update = jax.random.split(key)
-        particles_latent_pred, particles_obs_pred = self._predict_step(particles, key_pred, xt)
-        particles_latent = self._update_step(key_update, particles_latent_pred, particles_obs_pred, yt)
-
-        out = callback_fn(particles_latent, particles_latent_pred, yt, xt)
-
-        return particles_latent, out
-
 
 class HubEnsembleKalmanFilter(EnsembleKalmanFilter):
     """
