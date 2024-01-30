@@ -79,7 +79,8 @@ class EnsembleKalmanFilterInflation(EnsembleKalmanFilter):
         K = jnp.linalg.solve(Mk + jnp.eye(Mk.shape[0]), Mk)
 
 
-        latent = latent_pred + jnp.einsum("ij,kj->ki", K, y - obs_pred)
+        errs = y - obs_pred
+        latent = latent_pred + jnp.einsum("ij,kj->ki", K, errs)
 
         return latent
     
