@@ -66,25 +66,69 @@ class EnsembleKalmanFilterInflation(EnsembleKalmanFilter):
     ):
         super().__init__(latent_fn, obs_fn, n_particles)
         self.inflation_factor = inflation_factor
+    
 
+    def _load_gain_errs(self, latent_pred, obs_pred, y):
 
-    def _update_step(self, latent_pred, obs_pred, y):
-        latent_pred_hat = jnp.einsum("ji,jk->ki", latent_pred, self.matrix_deviation)
-        obs_pred_hat = jnp.einsum("ji,jk->ki", obs_pred, self.matrix_deviation)
-
-        latent_pred_hat = latent_pred_hat - latent_pred_hat.mean(axis=0, keepdims=True)
+        latent_pred_hat = latent_pred - latent_pred.mean(axis=0, keepdims=True)
+        obs_pred_hat = obs_pred - obs_pred.mean(axis=0, keepdims=True)
+        # latent_pred_hat = latent_pred - latent_pred.mean(axis=0, keepdims=True)
+        # Estimate of the state covariance matrix
+        # Mk = jnp.einsum("ji,jk->ik", latent_pred_hat, obs_pred) / (self.n_particles - 1)
         Mk = jnp.einsum("ji,jk->ik", latent_pred_hat, obs_pred_hat) / (self.n_particles - 1)
         Mk = Mk.at[jnp.diag_indices_from(Mk)].set(jnp.diag(Mk) * self.inflation_factor)
         # Sk = jnp.einsum("ji,jk->ik", obs_pred_hat, obs_pred_hat) / (self.n_particles - 1)
-        K = jnp.linalg.solve(Mk + jnp.eye(Mk.shape[0]), Mk)
+        gain = jnp.linalg.solve(Mk + jnp.eye(Mk.shape[0]), Mk)
+        errs = y - obs_pred # innovation
 
+        return gain, errs
 
-        errs = y - obs_pred
-        latent = latent_pred + jnp.einsum("ij,kj->ki", K, errs)
-
+    def _update_step(self, latent_pred, obs_pred, y):
+        gain, errs = self._load_gain_errs(latent_pred, obs_pred, y)
+        latent = latent_pred + jnp.einsum("ij,kj->ki", gain, errs)
         return latent
     
 
+
+class WLEnsembleKalmanFilterPP(EnsembleKalmanFilterInflation):
+    def __init__(
+        self, latent_fn, obs_fn, n_particles, inflation_factor, threshold
+    ):
+        """
+        Weighted-likelihood Ensemble Kalman Filter with
+        inflation and per-particle weighting
+        """
+        super().__init__(latent_fn, obs_fn, n_particles, inflation_factor)
+        self.threshold = threshold
+
+
+    def _update_step(self, latent_pred, obs_pred, y):
+        gain, errs = self._load_gain_errs(latent_pred, obs_pred, y)
+        wt = jnp.sqrt(jnp.power(errs, 2)) < self.threshold
+        latent = latent_pred + jnp.einsum("ij,kj->ki", gain, wt * errs)
+
+        return latent
+
+
+class WLEnsembleKalmanFilterAP(EnsembleKalmanFilterInflation):
+    def __init__(
+        self, latent_fn, obs_fn, n_particles, inflation_factor, threshold
+    ):
+        """
+        Weighted-likelihood Ensemble Kalman Filter with
+        inflation and average particle
+        """
+        super().__init__(latent_fn, obs_fn, n_particles, inflation_factor)
+        self.threshold = threshold
+
+
+    def _update_step(self, latent_pred, obs_pred, y):
+        gain, errs = self._load_gain_errs(latent_pred, obs_pred, y)
+        wt = jnp.sqrt(jnp.power(errs, 2).mean(axis=0)) < self.threshold
+        latent = latent_pred + jnp.einsum("ij,kj->ki", gain, wt * errs)
+
+        return latent
+    
 
 class WLEnsembleKalmanFilterSoft(EnsembleKalmanFilter):
     """
@@ -136,73 +180,43 @@ class WLEnsembleKalmanFilterHard(EnsembleKalmanFilter):
         return latent
 
 
-class WLEnsembleKalmanFilterResample(EnsembleKalmanFilter):
-    """
-    Weighted likelihood Ensemble Kalman Filter
-    """
-    def __init__(
-        self, latent_fn, obs_fn, n_particles, c
-    ):
-        super().__init__(latent_fn, obs_fn, n_particles)
-        self.c = c
-
-    @partial(jax.vmap, in_axes=(None, 0, 1, 1), out_axes=1)
-    def resample_from_column(self, key, particles, weights):
-        p_weights = jnp.ones(self.n_particles) / (self.n_particles - weights.sum())
-        rval = weights.argmax()
-        ix_where = jnp.where(weights, size=self.n_particles, fill_value=rval)
-        p_weights = p_weights.at[ix_where].set(0.0)
-        particles_resample = jax.random.choice(key, particles, shape=(self.n_particles,), p=p_weights)
-        new_particles =  particles * (1 - weights) + particles_resample * weights
-        
-        return new_particles
-
-    def _update_step(self, key, latent_pred, obs_pred, y):
-        latent_pred_hat = jnp.einsum("ji,jk->ki", latent_pred, self.matrix_deviation)
-        obs_pred_hat = jnp.einsum("ji,jk->ki", obs_pred, self.matrix_deviation)
-
-        errs = y - obs_pred_hat
-        # keys = jax.random.split(key, errs.shape[1])
-        wt = jnp.sqrt(jnp.power(errs, 2)) < self.c
-        # obs_pred_hat = obs_pred_hat * wt
-
-        # obs_pred_hat = obs_pred_hat * wt
-        wt = jnp.mean(wt, axis=0)
-
-        Mk = jnp.einsum("ji,jk->ik", latent_pred_hat, obs_pred_hat) / (self.n_particles - 1)
-        Sk = jnp.einsum("ji,jk->ik", obs_pred_hat, obs_pred_hat) / (self.n_particles - 1)
-        # K = jnp.linalg.solve(Sk, Mk)
-        K = jnp.diag(wt) @ jnp.linalg.inv(Sk) @ Mk @ jnp.diag(wt)
-
-
-        # obs_pred = self.resample_from_column(keys, obs_pred, wt)
-        errs = y - obs_pred_hat
-        latent = latent_pred + jnp.einsum("ij,kj->ki", K, errs)
-
-        return latent
-
-
 class HubEnsembleKalmanFilter(EnsembleKalmanFilter):
     """
     Huberised likelihood Ensemble Kalman Filter
     """
     def __init__(
-        self, latent_fn, obs_fn, n_particles, clipping_height
+        self, latent_fn, obs_fn, n_particles, inflation_factor, clipping_height
     ):
         super().__init__(latent_fn, obs_fn, n_particles)
         self.clipping_height = clipping_height
+        self.inflation_factor = inflation_factor
     
 
     def huberisation(self, x):
         return jnp.clip(x, -self.clipping_height, self.clipping_height)
 
     def _update_step(self, latent_pred, obs_pred, y):
+        # latent_pred_hat = jnp.einsum("ji,jk->ki", latent_pred, self.matrix_deviation)
+        # obs_pred_hat = jnp.einsum("ji,jk->ki", obs_pred, self.matrix_deviation)
+
+        # Mk = jnp.einsum("ji,jk->ik", latent_pred_hat, obs_pred_hat) / (self.n_particles - 1)
+        # Sk = jnp.einsum("ji,jk->ik", obs_pred_hat, obs_pred_hat) / (self.n_particles - 1)
+        # K = jnp.linalg.solve(Sk, Mk)
+
+        # errs = y - obs_pred
+        # errs = self.huberisation(errs)
+        # latent = latent_pred + jnp.einsum("ij,kj->ki", K, errs)
+
+        # return latent
+
         latent_pred_hat = jnp.einsum("ji,jk->ki", latent_pred, self.matrix_deviation)
         obs_pred_hat = jnp.einsum("ji,jk->ki", obs_pred, self.matrix_deviation)
 
+        latent_pred_hat = latent_pred_hat - latent_pred_hat.mean(axis=0, keepdims=True)
         Mk = jnp.einsum("ji,jk->ik", latent_pred_hat, obs_pred_hat) / (self.n_particles - 1)
-        Sk = jnp.einsum("ji,jk->ik", obs_pred_hat, obs_pred_hat) / (self.n_particles - 1)
-        K = jnp.linalg.solve(Sk, Mk)
+        Mk = Mk.at[jnp.diag_indices_from(Mk)].set(jnp.diag(Mk) * self.inflation_factor) # covariance inflation
+        K = jnp.linalg.solve(Mk + jnp.eye(Mk.shape[0]), Mk)
+
 
         errs = y - obs_pred
         errs = self.huberisation(errs)
