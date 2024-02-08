@@ -179,7 +179,9 @@ class IMQFilter:
         xt, yt = xs
         dynamics_covariance = jax.lax.cond(
             self.adaptive_dynamics,
-            lambda: self.dynamics_covariance * (1 - bel.weighting_term) ** 2,
+            lambda: self.dynamics_covariance * -jnp.log(bel.weighting_term) / 2,
+            # lambda: self.dynamics_covariance * 1 / bel.weighting_term,
+            # lambda: self.dynamics_covariance * (1 - bel.weighting_term) ** 2,
             lambda: self.dynamics_covariance,
         )
         pmean_pred = self.transition_matrix @ bel.mean
