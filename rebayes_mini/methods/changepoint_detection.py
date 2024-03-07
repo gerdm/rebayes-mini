@@ -106,6 +106,23 @@ class LinearModelBayesianOnlineChangepointDetection:
         )
             
         return mean_hist, cov_hist
+    
+
+    def update_log_posterior(self, t, runlength_log_posterior, marginal, log_joint_hist):
+        ix_init = self.get_ix(t, 0)
+        ix_end = self.get_ix(t, t+1)
+
+        section = slice(ix_init, ix_end, 1)
+        log_joint_sub =  log_joint_hist[section]
+        
+        marginal_t = jax.nn.logsumexp(log_joint_sub)
+        marginal = marginal.at[t].set(marginal_t)
+        
+        update = log_joint_sub - marginal_t
+        runlength_log_posterior = runlength_log_posterior.at[section].set(update)
+
+        return marginal, runlength_log_posterior
+
 
     def scan(self, y, X):
         """
@@ -119,7 +136,9 @@ class LinearModelBayesianOnlineChangepointDetection:
 
         size_filter = n_samples * (n_samples + 1) // 2
         
+        marginal = jnp.zeros(n_samples)
         log_joint = jnp.zeros((size_filter,))
+        log_cond = jnp.zeros((size_filter,))
         hist_mean = jnp.zeros((size_filter, d))
         hist_cov = jnp.zeros((size_filter, d, d))
         
@@ -136,9 +155,20 @@ class LinearModelBayesianOnlineChangepointDetection:
                     log_joint = self.update_log_joint_reset(t, ell, yt, xt, hist_mean, hist_cov, log_joint)
                 else:
                     log_joint = self.update_log_joint_increase(t, ell, yt, xt, hist_mean, hist_cov, log_joint)
+                
+            # compute runlength log-posterior
+            marginal, log_cond = self.update_log_posterior(t, log_cond, marginal, log_joint)
             
             # Update posterior parameters
             for ell in range(t+1):
                 hist_mean, hist_cov = self.update_posterior_params(t, ell, yt, xt, hist_mean, hist_cov)
 
-        return log_joint, hist_mean, hist_cov
+        out = {
+            "log_joint": log_joint,
+            "log_runlength_posterior": log_cond,
+            "marginal": marginal,
+            "means": hist_mean,
+            "covs": hist_cov
+        }
+
+        return out
