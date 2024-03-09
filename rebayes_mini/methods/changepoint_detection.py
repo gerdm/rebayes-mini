@@ -172,3 +172,48 @@ class LinearModelBayesianOnlineChangepointDetection:
         }
 
         return out
+
+
+class WeightedLinearModelBayesianOnlineChangepointDetection(LinearModelBayesianOnlineChangepointDetection):
+    def __init__(self, mean_prior, cov_prior, p_change, beta, c):
+        super().__init__(mean_prior, cov_prior, p_change, beta)
+        self.c = c
+
+    def imq_kernel(self, residual):
+        """
+        Inverse multi-quadratic kernel
+        """
+        return 1 / jnp.sqrt(1 + residual ** 2 / self.c ** 2)
+    
+
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_log_posterior_predictive(self, mean_posterior, cov_posterior, y, X):
+        """
+        Compute log-posterior predictive for a Gaussian with known variance
+        """
+        mean = mean_posterior @ X
+        residual = y - mean
+        Wt = self.imq_kernel(residual)
+
+        scale = 1 / (self.beta * Wt ** 2) + X @ cov_posterior @ X
+        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
+        return log_p_pred
+
+
+    @partial(jax.jit, static_argnums=(0,))   
+    def update_posterior_params_increase(self, t, ell, y, X, mean_hist, cov_hist):
+        ix_prev = self.get_ix(t, ell-1)
+        ix_update = self.get_ix(t+1, ell)
+        
+        cov_previous = cov_hist[ix_prev]
+        mean_previous = mean_hist[ix_prev]
+        prec_previous = jnp.linalg.inv(cov_previous)
+        
+        Wt = self.imq_kernel(y - X @ mean_previous)
+        prec_posterior = prec_previous + Wt ** 2 * self.beta * jnp.outer(X, X)
+        cov_posterior = jnp.linalg.inv(prec_posterior)
+        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + Wt ** 2 * self.beta * X * y)
+
+        mean_hist = mean_hist.at[ix_update].set(mean_posterior)
+        cov_hist = cov_hist.at[ix_update].set(cov_posterior)
+        return mean_hist, cov_hist
