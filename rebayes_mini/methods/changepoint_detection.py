@@ -262,3 +262,67 @@ class WLLM_BOCD(LM_BOCD):
         log_p_pred = distrax.Normal(mean, scale).log_prob(y)
         return log_p_pred
     
+
+class AWLLM_BOCD(LM_BOCD):
+    """
+    Adaptive, Weighted-likelihood LM-BOCD
+    """
+    def __init__(self, p_change, beta, c, shock_val):
+        super().__init__(p_change, beta)
+        self.c = c
+        self.shock_val = shock_val
+
+    @partial(jax.jit, static_argnums=(0,))
+    def imq_kernel(self, residual):
+        """
+        Inverse multi-quadratic kernel
+        """
+        return 1 / jnp.sqrt(1 + residual ** 2 / self.c ** 2)
+
+
+    @partial(jax.jit, static_argnums=(0,))
+    def update_bel_single(self, y, X, bel):
+        cov_previous = bel.cov
+        mean_previous = bel.mean
+
+        prec_previous = jnp.linalg.inv(cov_previous)
+
+        Wt = self.imq_kernel(y - X @ mean_previous)
+        prec_posterior = prec_previous + Wt ** 2 * self.beta * jnp.outer(X, X)
+        cov_posterior = jnp.linalg.inv(prec_posterior)
+        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + Wt ** 2 * self.beta * X * y)
+
+        bel = GaussState(mean=mean_posterior, cov=cov_posterior)
+        return bel
+
+
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_log_posterior_predictive(self, y, X, bel):
+        """
+        Compute log-posterior predictive for a Gaussian with known variance
+        """
+        mean = bel.mean @ X
+        residual = y - mean
+        Wt = self.imq_kernel(residual)
+
+        scale = 1 / (self.beta * Wt ** 2) + X @ bel.cov @ X
+        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
+        return log_p_pred
+    
+
+    @partial(jax.jit, static_argnums=(0,))
+    def update_bel_reset(self, t, ell, y, X, bel_hist):
+        shift = jnp.maximum(0, t - 1)
+        ix_prev = self.get_ix(t, shift)
+        ix_update = self.get_ix(t+1, ell)
+
+        bel_previous_single = jax.tree_map(lambda hist: hist[ix_prev], bel_hist)
+        prev_mean = bel_previous_single.mean
+        prev_cov = bel_previous_single.cov / self.shock_val
+        bel_reset = GaussState(mean=prev_mean, cov=prev_cov)
+        # bel_posterior_single = self.update_bel_single(y, X, bel_previous_single)
+
+        # update belief state
+        bel_hist = jax.tree_map(lambda hist, element: hist.at[ix_update].set(element), bel_hist, bel_reset)
+        return bel_hist
+    
