@@ -1,17 +1,10 @@
 import jax
-import chex
 import distrax
 import jax.numpy as jnp
 from tqdm import tqdm
 from abc import ABC, abstractmethod
 from functools import partial
-
-
-@chex.dataclass
-class GaussState:
-    """State of the Kalman Filter"""
-    mean: chex.Array
-    cov: chex.Array
+from rebayes_mini.states import GaussState
 
 
 class BayesianOnlineChangepointDetection(ABC):
@@ -176,8 +169,6 @@ class BayesianOnlineChangepointDetection(ABC):
         return out
 
 
-
-
 class LM_BOCD(BayesianOnlineChangepointDetection):
     """
     LM-BOCD: Bayesian Online Changepoint Detection for linear model
@@ -196,7 +187,7 @@ class LM_BOCD(BayesianOnlineChangepointDetection):
         hist_cov = jnp.zeros((size_filter, d, d))
         
         bel_hist = GaussState(mean=hist_mean, cov=hist_cov)
-        bel_hist = jax.tree_map(lambda hist, init: hist .at[0].set(init), bel_hist, bel_init)
+        bel_hist = jax.tree_map(lambda hist, init: hist.at[0].set(init), bel_hist, bel_init)
         return bel_hist
     
     
