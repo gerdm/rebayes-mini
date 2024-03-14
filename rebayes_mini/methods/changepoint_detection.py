@@ -24,6 +24,15 @@ class BayesianOnlineChangepointDetection(ABC):
         ...
 
 
+    @partial(jax.jit, static_argnums=(0,))
+    def get_ix(self,t, ell):
+        # Number of steps to get to first observation at time t
+        ix_step = t * (t + 1) // 2
+        # Increase runlength
+        ix = ix_step + ell
+        return ix
+
+
     def update_log_joint_reset(self, t, ell, y, X, bel_hist, log_joint_hist):
         bel_prior = jax.tree_map(lambda x: x[0], bel_hist)
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
@@ -60,14 +69,6 @@ class BayesianOnlineChangepointDetection(ABC):
         else:
             log_joint_hist = self.update_log_joint_increase(t, ell, y, X, bel_hist, log_joint_hist)
 
-
-    @partial(jax.jit, static_argnums=(0,))
-    def get_ix(self,t, ell):
-        # Number of steps to get to first observation at time t
-        ix_step = t * (t + 1) // 2
-        # Increase runlength
-        ix = ix_step + ell
-        return ix
 
 
     @partial(jax.jit, static_argnums=(0,))
@@ -154,7 +155,7 @@ class BayesianOnlineChangepointDetection(ABC):
 
             # Update posterior parameters
             for ell in range(t+1):
-                hist_mean, hist_cov = self.update_bel(t, ell, yt, xt, bel_hist)
+                bel_hist = self.update_bel(t, ell, yt, xt, bel_hist)
 
         out = {
             "log_joint": log_joint,
