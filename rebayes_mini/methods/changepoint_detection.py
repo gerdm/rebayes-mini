@@ -157,7 +157,7 @@ class BayesianOnlineChangepointDetection(ABC):
             marginal, log_cond = self.update_log_posterior(t, log_cond, marginal, log_joint)
 
             # Update posterior parameters
-            for ell in range(t+1): # Are you sure!?
+            for ell in range(t+1):
                 bel_hist = self.update_bel(t, ell, yt, xt, bel_hist)
 
         out = {
