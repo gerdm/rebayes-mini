@@ -99,7 +99,7 @@ class BayesianOnlineChangepointDetection(ABC):
         return bel_hist
 
 
-    # @partial(jax.jit, static_argnums=(0,))
+    @partial(jax.jit, static_argnums=(0,))
     def update_bel(self, t, ell, y, X, bel_hist):
         """
         Update belief state (posterior) for a given runlength
