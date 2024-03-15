@@ -321,9 +321,9 @@ class AWLLM_BOCD(LM_BOCD):
         prev_mean = bel_previous_single.mean
         prev_cov = bel_previous_single.cov / self.shock_val
         bel_reset = GaussState(mean=prev_mean, cov=prev_cov)
-        # bel_posterior_single = self.update_bel_single(y, X, bel_previous_single)
+        bel_posterior = self.update_bel_single(y, X, bel_reset)
 
         # update belief state
-        bel_hist = jax.tree_map(lambda hist, element: hist.at[ix_update].set(element), bel_hist, bel_reset)
+        bel_hist = jax.tree_map(lambda hist, element: hist.at[ix_update].set(element), bel_hist, bel_posterior)
         return bel_hist
     
