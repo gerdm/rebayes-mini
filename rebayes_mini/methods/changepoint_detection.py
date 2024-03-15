@@ -59,7 +59,7 @@ class BayesianOnlineChangepointDetection(ABC):
         ix_update = self.get_ix(t, ell)
         ix_prev = self.get_ix(t-1, ell-1)
 
-        bel_posterior = jax.tree_map(lambda hist: hist[ix_update], bel_hist)
+        bel_posterior = jax.tree_map(lambda hist: hist[ix_prev], bel_hist)
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel_posterior)
 
         log_joint = log_p_pred + log_joint_hist[ix_prev] + jnp.log(1 - self.p_change)
@@ -78,8 +78,8 @@ class BayesianOnlineChangepointDetection(ABC):
 
     @partial(jax.jit, static_argnums=(0,))
     def update_bel_increase(self, t, ell, y, X, bel_hist):
-        ix_prev = self.get_ix(t, ell-1)
-        ix_update = self.get_ix(t+1, ell)
+        ix_prev = self.get_ix(t-1, ell-1)
+        ix_update = self.get_ix(t, ell)
 
         bel_previous_single = jax.tree_map(lambda hist: hist[ix_prev], bel_hist)
         bel_posterior_single = self.update_bel_single(y, X, bel_previous_single)
@@ -91,7 +91,7 @@ class BayesianOnlineChangepointDetection(ABC):
 
     @partial(jax.jit, static_argnums=(0,))
     def update_bel_reset(self, t, ell, y, X, bel_hist):
-        ix_update = self.get_ix(t+1, ell)
+        ix_update = self.get_ix(t, ell)
 
         bel_init_single = jax.tree_map(lambda x: x[0], bel_hist)
         bel_hist = jax.tree_map(lambda hist, element: hist.at[ix_update].set(element), bel_hist, bel_init_single)
@@ -99,7 +99,7 @@ class BayesianOnlineChangepointDetection(ABC):
         return bel_hist
 
 
-    # @partial(jax.jit, static_argnums=(0,))
+    @partial(jax.jit, static_argnums=(0,))
     def update_bel(self, t, ell, y, X, bel_hist):
         """
         Update belief state (posterior) for a given runlength
@@ -145,8 +145,9 @@ class BayesianOnlineChangepointDetection(ABC):
         bel_hist = self.init_bel(y, X, bel_prior, size_filter)
 
         for t in tqdm(range(n_samples)):
-            xt = X[t].squeeze()
-            yt = y[t].squeeze()
+            tix = jnp.maximum(0, t-1)
+            xt = X[tix].squeeze()
+            yt = y[tix].squeeze()
 
             # Compute log-joint
             for ell in range(t+1):
@@ -313,8 +314,8 @@ class AWLLM_BOCD(LM_BOCD):
     @partial(jax.jit, static_argnums=(0,))
     def update_bel_reset(self, t, ell, y, X, bel_hist):
         shift = jnp.maximum(0, t - 1)
-        ix_prev = self.get_ix(t, shift)
-        ix_update = self.get_ix(t+1, ell)
+        ix_prev = self.get_ix(t - 1, shift)
+        ix_update = self.get_ix(t, ell)
 
         bel_previous_single = jax.tree_map(lambda hist: hist[ix_prev], bel_hist)
         prev_mean = bel_previous_single.mean
