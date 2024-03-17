@@ -158,6 +158,8 @@ class BayesianOnlineChangepointDetection(ABC):
 
             # Update posterior parameters
             for ell in range(t+1):
+                if t == 0: # TODO: refactor
+                    continue
                 bel_hist = self.update_bel(t, ell, yt, xt, bel_hist)
 
         out = {
@@ -186,12 +188,12 @@ class LM_BOCD(BayesianOnlineChangepointDetection):
         _, d = X_hist.shape
         hist_mean = jnp.zeros((size_filter, d))
         hist_cov = jnp.zeros((size_filter, d, d))
-        
+
         bel_hist = GaussState(mean=hist_mean, cov=hist_cov)
         bel_hist = jax.tree_map(lambda hist, init: hist.at[0].set(init), bel_hist, bel_init)
         return bel_hist
-    
-    
+
+
     @partial(jax.jit, static_argnums=(0,))
     def update_bel_single(self, y, X, bel_prev):
         cov_previous = bel_prev.cov
@@ -262,7 +264,7 @@ class WLLM_BOCD(LM_BOCD):
         scale = 1 / (self.beta * Wt ** 2) + X @ bel.cov @ X
         log_p_pred = distrax.Normal(mean, scale).log_prob(y)
         return log_p_pred
-    
+
 
 class AWLLM_BOCD(LM_BOCD):
     """
@@ -309,7 +311,6 @@ class AWLLM_BOCD(LM_BOCD):
         scale = 1 / (self.beta * Wt ** 2) + X @ bel.cov @ X
         log_p_pred = distrax.Normal(mean, scale).log_prob(y)
         return log_p_pred
-    
 
     @partial(jax.jit, static_argnums=(0,))
     def update_bel_reset(self, t, ell, y, X, bel_hist):
@@ -326,4 +327,19 @@ class AWLLM_BOCD(LM_BOCD):
         # update belief state
         bel_hist = jax.tree_map(lambda hist, element: hist.at[ix_update].set(element), bel_hist, bel_posterior)
         return bel_hist
-    
+
+    def update_log_joint_reset(self, t, ell, y, X, bel_hist, log_joint_hist):
+        ix_prev = self.get_ix(t - 1, 0)
+        bel_prior = jax.tree_map(lambda x: x[ix_prev], bel_hist)
+        log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
+
+        if t == 0:
+            log_joint = log_p_pred + jnp.log(self.p_change)
+        else:
+            ix_start = self.get_ix(t-1, 0)
+            ix_end = self.get_ix(t-1, (t-1) + 1)
+            log_joint = log_p_pred + jax.nn.logsumexp(log_joint_hist[ix_start:ix_end] + jnp.log(self.p_change))
+
+        ix = self.get_ix(t, ell)
+        log_joint_hist = log_joint_hist.at[ix].set(log_joint.squeeze())
+        return log_joint_hist
