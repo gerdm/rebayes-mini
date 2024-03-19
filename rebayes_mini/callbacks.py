@@ -1,4 +1,4 @@
-def get_null(bel_update, bel_prev, y, x):
+def get_null(bel_update, bel_prev, y, x, *args, **kwargs):
     return None
 
 
