@@ -4,7 +4,8 @@ import jax.numpy as jnp
 from tqdm import tqdm
 from abc import ABC, abstractmethod
 from functools import partial
-from rebayes_mini.states import GaussState
+from rebayes_mini import states
+from rebayes_mini import callbacks
 
 
 class BayesianOnlineChangepointDetection(ABC):
@@ -189,7 +190,7 @@ class LM_BOCD(BayesianOnlineChangepointDetection):
         hist_mean = jnp.zeros((size_filter, d))
         hist_cov = jnp.zeros((size_filter, d, d))
 
-        bel_hist = GaussState(mean=hist_mean, cov=hist_cov)
+        bel_hist = states.GaussState(mean=hist_mean, cov=hist_cov)
         bel_hist = jax.tree_map(lambda hist, init: hist.at[0].set(init), bel_hist, bel_init)
         return bel_hist
 
@@ -205,7 +206,7 @@ class LM_BOCD(BayesianOnlineChangepointDetection):
         cov_posterior = jnp.linalg.inv(prec_posterior)
         mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
 
-        bel = GaussState(mean=mean_posterior, cov=cov_posterior)
+        bel = states.GaussState(mean=mean_posterior, cov=cov_posterior)
         return bel
 
 
@@ -248,7 +249,7 @@ class WLLM_BOCD(LM_BOCD):
         cov_posterior = jnp.linalg.inv(prec_posterior)
         mean_posterior = cov_posterior @ (prec_previous @ mean_previous + Wt ** 2 * self.beta * X * y)
 
-        bel = GaussState(mean=mean_posterior, cov=cov_posterior)
+        bel = states.GaussState(mean=mean_posterior, cov=cov_posterior)
         return bel
 
 
@@ -295,7 +296,7 @@ class AWLLM_BOCD(LM_BOCD):
         cov_posterior = jnp.linalg.inv(prec_posterior)
         mean_posterior = cov_posterior @ (prec_previous @ mean_previous + Wt ** 2 * self.beta * X * y)
 
-        bel = GaussState(mean=mean_posterior, cov=cov_posterior)
+        bel = states.GaussState(mean=mean_posterior, cov=cov_posterior)
         return bel
 
 
@@ -321,7 +322,7 @@ class AWLLM_BOCD(LM_BOCD):
         bel_previous_single = jax.tree_map(lambda hist: hist[ix_prev], bel_hist)
         prev_mean = bel_previous_single.mean
         prev_cov = bel_previous_single.cov / self.shock_val
-        bel_reset = GaussState(mean=prev_mean, cov=prev_cov)
+        bel_reset = states.GaussState(mean=prev_mean, cov=prev_cov)
         bel_posterior = self.update_bel_single(y, X, bel_reset)
 
         # update belief state
@@ -346,10 +347,10 @@ class AWLLM_BOCD(LM_BOCD):
 
 
 class LowMemoryBayesianOnlineChangepoint(ABC):
-    def __init__(self, p_change, K, beta):
+    def __init__(self, p_change, K):
         self.p_change = p_change
         self.K = K
-        self.beta = beta
+
 
     @partial(jax.vmap, in_axes=(None, None, None, 0))
     def update_log_joint_increase(self, y, X, bel):
@@ -357,12 +358,13 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         log_joint = log_p_pred + bel.log_joint + jnp.log(1 - self.p_change)
         return log_joint
 
+
     def update_log_joint_reset(self, y, X, bel, bel_prior):
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
         log_joint = log_p_pred + jax.nn.logsumexp(bel.log_joint) + jnp.log(self.p_change)
         return jnp.atleast_1d(log_joint)
     
-    # @partial(jax.jit, static_argnums=(0,))
+
     def update_log_joint(self, y, X, bel, bel_prior):
         log_joint_increase = self.update_log_joint_increase(y, X, bel)
         log_joint_reset = self.update_log_joint_reset(y, X, bel, bel_prior)
@@ -374,13 +376,12 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         return log_joint, top_indices
 
 
-    # @partial(jax.jit, static_argnums=(0,))
     def update_bel(self, y, X, bel, bel_prior, top_indices):
         """
         Update belief state (posterior) for a given runlength
         """
         # Update all belief states
-        bel = self.update_bel_single(y, X, bel)
+        bel = self.vmap_update_bel(y, X, bel)
         # Increment belief state by adding bel_prior and keeping top_indices
         bel = jax.tree_map(lambda beliefs, prior: jnp.concatenate([prior[None], beliefs]), bel, bel_prior)
         bel = jax.tree_map(lambda param: jnp.take(param, top_indices, axis=0), bel)
@@ -396,7 +397,8 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         runlengths = jnp.take(runlengths, top_indices, axis=0)
         return runlengths
     
-    def step(self, y, X, bel, bel_prior):
+
+    def step(self, y, X, bel, bel_prior, callback_fn):
         """
         Update belief state and log-joint for a single observation
         """
@@ -404,33 +406,89 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         bel = self.update_bel(y, X, bel, bel_prior, top_indices)
         runlengths = self.update_runlengths(bel, top_indices)
         bel = bel.replace(log_joint=log_joint, runlengths=runlengths)
-        return bel, top_indices
+
+        out = callback_fn(bel, bel_prior, y, X, top_indices)
+
+        return bel, out
 
 
-    def scan(self, y, X, bel, bel_prior):
+    def scan(self, y, X, bel, callback_fn=None):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        bel_prior = jax.tree_map(lambda x: x[0], bel)
         def _step(bel, yX):
             y, X = yX
-            bel, ixs = self.step(y, X, bel, bel_prior)
-            return bel, (bel.log_joint, bel.runlengths,  ixs)
+            bel, out = self.step(y, X, bel, bel_prior, callback_fn)
+            return bel, out
         
         bel, hist = jax.lax.scan(_step, bel, (y, X))
-        return hist
+        return bel, hist
 
+
+    @abstractmethod
+    def init_bel(self, y, X, bel_init):
+        ...
+    
+
+    @abstractmethod
+    def compute_log_posterior_predictive(self, y, X, bel):
+        ...
+    
+
+    @abstractmethod
+    def vmap_update_bel(self, y, X, bel):
+        """
+        Vmap over bel state. y and X are single observations
+        """
+        ...
+
+
+
+class LM_LMBOCD(LowMemoryBayesianOnlineChangepoint):
+    """
+    Low-memory LM-BOCD
+    """
+    def __init__(self, p_change, K, beta):
+        super().__init__(p_change, K)
+        self.beta = beta
+
+
+    def init_bel(self, mean, cov, log_joint_init):
+        """
+        Initialize belief state
+        """
+        d, *_ = mean.shape
+        bel = states.BOCDGaussState(
+            mean=jnp.zeros((self.K, d)),
+            cov=jnp.zeros((self.K, d, d)),
+            log_joint=jnp.ones((self.K,)) * -jnp.inf,
+            runlengths=jnp.zeros(self.K)
+        )
+
+        bel_init = states.BOCDGaussState(
+            mean=mean,
+            cov=cov,
+            log_joint=log_joint_init,
+            runlengths=jnp.array(0)
+        )
+
+        bel = jax.tree_map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
+
+        return bel
 
 
     @partial(jax.jit, static_argnums=(0,))
     def compute_log_posterior_predictive(self, y, X, bel):
         """
         Compute log-posterior predictive for a Gaussian with known variance
-        TODO: remove after refactor
         """
         mean = bel.mean @ X
         scale = 1 / self.beta + X @  bel.cov @ X
         log_p_pred = distrax.Normal(mean, scale).log_prob(y)
         return log_p_pred
 
+
     @partial(jax.vmap, in_axes=(None, None, None, 0))
-    def update_bel_single(self, y, X, bel):
+    def vmap_update_bel(self, y, X, bel):
         cov_previous = bel.cov
         mean_previous = bel.mean
 
