@@ -329,7 +329,7 @@ class AWLLM_BOCD(LM_BOCD):
         return bel_hist
 
     def update_log_joint_reset(self, t, ell, y, X, bel_hist, log_joint_hist):
-        ix_prev = self.get_ix(t - 1, 0)
+        ix_prev = self.get_ix(t - 1, t - 1)
         bel_prior = jax.tree_map(lambda x: x[ix_prev], bel_hist)
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
 
@@ -343,3 +343,43 @@ class AWLLM_BOCD(LM_BOCD):
         ix = self.get_ix(t, ell)
         log_joint_hist = log_joint_hist.at[ix].set(log_joint.squeeze())
         return log_joint_hist
+
+
+class LowMemoryBayesianOnlineChangepoint(ABC):
+    def __init__(self, p_change, K, beta):
+        self.p_change = p_change
+        self.K = K
+        self.beta = beta
+
+    @partial(jax.vmap, in_axes=(None, None, None, 0))
+    def update_log_joint_increase(self, y, X, bel):
+        log_p_pred = self.compute_log_posterior_predictive(y, X, bel)
+        log_joint = log_p_pred + bel.log_joint + jnp.log(1 - self.p_change)
+        return log_joint
+
+    def update_log_joint_reset(self, y, X, bel, bel_prior):
+        log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
+        log_joint = log_p_pred + jax.nn.logsumexp(bel.log_joint) + jnp.log(self.p_change)
+        return jnp.atleast_1d(log_joint)
+    
+    @partial(jax.jit, static_argnums=(0,))
+    def update_log_joint(self, y, X, bel, bel_prior):
+        log_joint_increase = self.update_log_joint_increase(y, X, bel)
+        log_joint_reset = self.update_log_joint_reset(y, X, bel, bel_prior)
+        # Expand log-joint
+        log_joint = jnp.concatenate([log_joint_reset, log_joint_increase])
+        # reduce to K values --- index 0 is a changepoint
+        log_joint, top_indices = jax.lax.top_k(log_joint, k=self.K)
+        return log_joint, top_indices
+
+
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_log_posterior_predictive(self, y, X, bel):
+        """
+        Compute log-posterior predictive for a Gaussian with known variance
+        TODO: remove after refactor
+        """
+        mean = bel.mean @ X
+        scale = 1 / self.beta + X @  bel.cov @ X
+        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
+        return log_p_pred
