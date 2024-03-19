@@ -362,15 +362,39 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         log_joint = log_p_pred + jax.nn.logsumexp(bel.log_joint) + jnp.log(self.p_change)
         return jnp.atleast_1d(log_joint)
     
-    @partial(jax.jit, static_argnums=(0,))
+    # @partial(jax.jit, static_argnums=(0,))
     def update_log_joint(self, y, X, bel, bel_prior):
         log_joint_increase = self.update_log_joint_increase(y, X, bel)
         log_joint_reset = self.update_log_joint_reset(y, X, bel, bel_prior)
         # Expand log-joint
         log_joint = jnp.concatenate([log_joint_reset, log_joint_increase])
+        log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
         # reduce to K values --- index 0 is a changepoint
         log_joint, top_indices = jax.lax.top_k(log_joint, k=self.K)
         return log_joint, top_indices
+
+
+    # @partial(jax.jit, static_argnums=(0,))
+    def update_bel(self, y, X, bel, bel_prior, top_indices):
+        """
+        Update belief state (posterior) for a given runlength
+        """
+        # Update all belief states
+        bel = self.update_bel_single(y, X, bel)
+        # Increment belief state by adding bel_prior and keeping top_indices
+        bel = jax.tree_map(lambda beliefs, prior: jnp.concatenate([prior[None, ...], beliefs]), bel, bel_prior)
+        bel = jax.tree_map(lambda param: jnp.take(param, top_indices, axis=0), bel)
+        return bel
+    
+    def step(self, y, X, bel, bel_prior):
+        """
+        Update belief state and log-joint for a single observation
+        """
+        log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
+        bel = self.update_bel(y, X, bel, bel_prior, top_indices)
+        bel = bel.replace(log_joint=log_joint)
+        return bel, top_indices
+
 
 
     @partial(jax.jit, static_argnums=(0,))
@@ -383,3 +407,17 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         scale = 1 / self.beta + X @  bel.cov @ X
         log_p_pred = distrax.Normal(mean, scale).log_prob(y)
         return log_p_pred
+
+    @partial(jax.vmap, in_axes=(None, None, None, 0))
+    def update_bel_single(self, y, X, bel):
+        cov_previous = bel.cov
+        mean_previous = bel.mean
+
+        prec_previous = jnp.linalg.inv(cov_previous)
+
+        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
+        cov_posterior = jnp.linalg.inv(prec_posterior)
+        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
+
+        bel = bel.replace(mean=mean_posterior, cov=cov_posterior)
+        return bel
