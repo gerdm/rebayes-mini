@@ -382,9 +382,19 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         # Update all belief states
         bel = self.update_bel_single(y, X, bel)
         # Increment belief state by adding bel_prior and keeping top_indices
-        bel = jax.tree_map(lambda beliefs, prior: jnp.concatenate([prior[None, ...], beliefs]), bel, bel_prior)
+        bel = jax.tree_map(lambda beliefs, prior: jnp.concatenate([prior[None], beliefs]), bel, bel_prior)
         bel = jax.tree_map(lambda param: jnp.take(param, top_indices, axis=0), bel)
         return bel
+    
+    
+    def update_runlengths(self, bel, top_indices):
+        """
+        Update runlengths
+        """
+        runlengths = bel.runlengths + 1
+        runlengths = jnp.concatenate([jnp.array([0]), runlengths])
+        runlengths = jnp.take(runlengths, top_indices, axis=0)
+        return runlengths
     
     def step(self, y, X, bel, bel_prior):
         """
@@ -392,8 +402,19 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         """
         log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
         bel = self.update_bel(y, X, bel, bel_prior, top_indices)
-        bel = bel.replace(log_joint=log_joint)
+        runlengths = self.update_runlengths(bel, top_indices)
+        bel = bel.replace(log_joint=log_joint, runlengths=runlengths)
         return bel, top_indices
+
+
+    def scan(self, y, X, bel, bel_prior):
+        def _step(bel, yX):
+            y, X = yX
+            bel, ixs = self.step(y, X, bel, bel_prior)
+            return bel, (bel.log_joint, bel.runlengths,  ixs)
+        
+        bel, hist = jax.lax.scan(_step, bel, (y, X))
+        return hist
 
 
 
