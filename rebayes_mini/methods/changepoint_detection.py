@@ -550,10 +550,10 @@ class BernoulliRegimeChange:
         cov_previous = bel.cov
         mean_previous = bel.mean
 
-        prec_previous = jnp.linalg.inv(cov_previous)
-
         shock = self.shock ** has_changepoint
-        prec_posterior = shock * prec_previous + self.beta * jnp.outer(X, X)
+        prec_previous = shock * jnp.linalg.inv(cov_previous)
+
+        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
         cov_posterior = jnp.linalg.inv(prec_posterior)
         mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
 
@@ -602,5 +602,20 @@ class BernoulliRegimeChange:
         log_weight = bel.log_weight
         _, top_indices = jax.lax.top_k(log_weight, k=self.K)
         bel = jax.tree_map(lambda x: jnp.take(x, top_indices, axis=0), bel)
+        log_weights = bel.log_weight - jax.nn.logsumexp(bel.log_weight)
+        log_weights = jnp.nan_to_num(log_weights, nan=-jnp.inf, neginf=-jnp.inf)
+        bel = bel.replace(log_weight=log_weights)
 
         return bel
+
+    def scan(self, y, X, bel, callback_fn=None):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        def _step(bel, yX):
+            y, X = yX
+            bel_posterior = self.step(y, X, bel)
+            out = callback_fn(y, X, bel_posterior, bel)
+
+            return bel_posterior, out
+
+        bel, hist = jax.lax.scan(_step, bel, (y, X))
+        return bel, hist
