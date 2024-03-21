@@ -12,3 +12,11 @@ class BOCDGaussState:
     cov: chex.Array
     log_joint: chex.Array
     runlengths: chex.Array
+
+
+@chex.dataclass
+class BernoullChangeGaussState:
+    mean: chex.Array
+    cov: chex.Array
+    log_weight: chex.Array
+    runlength: chex.Array

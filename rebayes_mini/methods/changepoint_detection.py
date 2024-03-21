@@ -1,4 +1,5 @@
 import jax
+import einops
 import distrax
 import jax.numpy as jnp
 from tqdm import tqdm
@@ -352,6 +353,24 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         self.K = K
 
 
+    @abstractmethod
+    def init_bel(self, y, X, bel_init):
+        ...
+
+
+    @abstractmethod
+    def compute_log_posterior_predictive(self, y, X, bel):
+        ...
+
+
+    @abstractmethod
+    def vmap_update_bel(self, y, X, bel):
+        """
+        Vmap over bel state. y and X are single observations
+        """
+        ...
+
+
     @partial(jax.vmap, in_axes=(None, None, None, 0))
     def update_log_joint_increase(self, y, X, bel):
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel)
@@ -363,7 +382,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
         log_joint = log_p_pred + jax.nn.logsumexp(bel.log_joint) + jnp.log(self.p_change)
         return jnp.atleast_1d(log_joint)
-    
+
 
     def update_log_joint(self, y, X, bel, bel_prior):
         log_joint_increase = self.update_log_joint_increase(y, X, bel)
@@ -386,8 +405,8 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         bel = jax.tree_map(lambda beliefs, prior: jnp.concatenate([prior[None], beliefs]), bel, bel_prior)
         bel = jax.tree_map(lambda param: jnp.take(param, top_indices, axis=0), bel)
         return bel
-    
-    
+
+
     def update_runlengths(self, bel, top_indices):
         """
         Update runlengths
@@ -396,7 +415,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         runlengths = jnp.concatenate([jnp.array([0]), runlengths])
         runlengths = jnp.take(runlengths, top_indices, axis=0)
         return runlengths
-    
+
 
     def step(self, y, X, bel, bel_prior, callback_fn):
         """
@@ -419,28 +438,9 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
             y, X = yX
             bel, out = self.step(y, X, bel, bel_prior, callback_fn)
             return bel, out
-        
+
         bel, hist = jax.lax.scan(_step, bel, (y, X))
         return bel, hist
-
-
-    @abstractmethod
-    def init_bel(self, y, X, bel_init):
-        ...
-    
-
-    @abstractmethod
-    def compute_log_posterior_predictive(self, y, X, bel):
-        ...
-    
-
-    @abstractmethod
-    def vmap_update_bel(self, y, X, bel):
-        """
-        Vmap over bel state. y and X are single observations
-        """
-        ...
-
 
 
 class LM_LMBOCD(LowMemoryBayesianOnlineChangepoint):
@@ -499,4 +499,108 @@ class LM_LMBOCD(LowMemoryBayesianOnlineChangepoint):
         mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
 
         bel = bel.replace(mean=mean_posterior, cov=cov_posterior)
+        return bel
+
+
+class BernoulliRegimeChange:
+    """
+    Bernoulli regime change based on the
+    variational beam search (VBS) algorithm
+    """
+    def __init__(self, p_change, K, beta, shock):
+        self.p_change = p_change
+        self.K = K
+        self.beta = beta
+        self.shock = shock
+
+    def init_bel(self, mean, cov, log_weight):
+        """
+        Initialize belief state
+        """
+        d, *_ = mean.shape
+        bel = states.BernoullChangeGaussState(
+            mean=jnp.zeros((self.K, d)),
+            cov=jnp.zeros((self.K, d, d)),
+            log_weight=jnp.ones((self.K,)) * -jnp.inf,
+            runlength=jnp.zeros(self.K)
+        )
+
+        bel_init = states.BernoullChangeGaussState(
+            mean=mean,
+            cov=cov,
+            log_weight=log_weight,
+            runlength=jnp.array(0)
+        )
+
+        bel = jax.tree_map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
+
+        return bel
+
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_log_posterior_predictive(self, y, X, bel):
+        """
+        Compute log-posterior predictive for a Gaussian with known variance
+        """
+        mean = bel.mean @ X
+        scale = 1 / self.beta + X @  bel.cov @ X
+        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
+        return log_p_pred
+
+    def update_bel(self, y, X, bel, has_changepoint):
+        cov_previous = bel.cov
+        mean_previous = bel.mean
+
+        prec_previous = jnp.linalg.inv(cov_previous)
+
+        shock = self.shock ** has_changepoint
+        prec_posterior = shock * prec_previous + self.beta * jnp.outer(X, X)
+        cov_posterior = jnp.linalg.inv(prec_posterior)
+        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
+
+        bel = bel.replace(
+            mean=mean_posterior,
+            cov=cov_posterior,
+            runlength=bel.runlength + has_changepoint
+        )
+        return bel
+
+    # @partial(jax.vmap, in_axes=(None, None, None, 0))
+    def split_and_update(self, y, X, bel):
+        """
+        Update belief state and log-joint for a single observation
+        """
+        bel_up = self.update_bel(y, X, bel, has_changepoint=1.0)
+        bel_down = self.update_bel(y, X, bel, has_changepoint=0.0)
+
+        log_pp_up = self.compute_log_posterior_predictive(y, X, bel_up)
+        log_pp_down = self.compute_log_posterior_predictive(y, X, bel_down)
+
+        log_odds = log_pp_up - log_pp_down
+        log_odds = log_odds + jnp.log(self.p_change / (1 - self.p_change))
+
+        log_prob_up_conditional = -jnp.log1p(jnp.exp(-log_odds))
+        log_prob_down_conditional = -log_odds - jnp.log1p(jnp.exp(-log_odds))
+
+        # Compute log-hypothesis weight
+        log_weight_up = bel_up.log_weight + log_prob_up_conditional
+        log_weight_down = bel_down.log_weight + log_prob_down_conditional
+        log_weight_up = jnp.nan_to_num(log_weight_up, nan=-jnp.inf, neginf=-jnp.inf)
+        log_weight_down = jnp.nan_to_num(log_weight_down, nan=-jnp.inf, neginf=-jnp.inf)
+        # update
+        bel_up = bel_up.replace(log_weight=log_weight_up)
+        bel_down = bel_down.replace(log_weight=log_weight_down)
+
+        # Combine
+        bel_combined = jax.tree_map(lambda x, y: jnp.stack([x, y]), bel_up, bel_down)
+        return bel_combined
+
+
+    def step(self, y, X, bel):
+        vmap_split_and_update = jax.vmap(self.split_and_update, in_axes=(None, None, 0))
+        bel = vmap_split_and_update(y, X, bel)
+        bel = jax.tree_map(lambda x: einops.rearrange(x, "a b ... -> (a b) ..."), bel)
+        log_weight = bel.log_weight
+        _, top_indices = jax.lax.top_k(log_weight, k=self.K)
+        bel = jax.tree_map(lambda x: jnp.take(x, top_indices, axis=0), bel)
+
         return bel
