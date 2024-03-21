@@ -411,7 +411,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         """
         Update runlengths
         """
-        runlengths = bel.runlengths + 1
+        runlengths = bel.runlength + 1
         runlengths = jnp.concatenate([jnp.array([0]), runlengths])
         runlengths = jnp.take(runlengths, top_indices, axis=0)
         return runlengths
@@ -424,7 +424,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
         bel = self.update_bel(y, X, bel, bel_prior, top_indices)
         runlengths = self.update_runlengths(bel, top_indices)
-        bel = bel.replace(log_joint=log_joint, runlengths=runlengths)
+        bel = bel.replace(log_joint=log_joint, runlength=runlengths)
 
         out = callback_fn(bel, bel_prior, y, X, top_indices)
 
@@ -461,14 +461,14 @@ class LM_LMBOCD(LowMemoryBayesianOnlineChangepoint):
             mean=jnp.zeros((self.K, d)),
             cov=jnp.zeros((self.K, d, d)),
             log_joint=jnp.ones((self.K,)) * -jnp.inf,
-            runlengths=jnp.zeros(self.K)
+            runlength=jnp.zeros(self.K)
         )
 
         bel_init = states.BOCDGaussState(
             mean=mean,
             cov=cov,
             log_joint=log_joint_init,
-            runlengths=jnp.array(0)
+            runlength=jnp.array(0)
         )
 
         bel = jax.tree_map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
