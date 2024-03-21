@@ -596,14 +596,17 @@ class BernoulliRegimeChange:
 
 
     def step(self, y, X, bel):
+        # from K to 2K belief states
         vmap_split_and_update = jax.vmap(self.split_and_update, in_axes=(None, None, 0))
         bel = vmap_split_and_update(y, X, bel)
         bel = jax.tree_map(lambda x: einops.rearrange(x, "a b ... -> (a b) ..."), bel)
-        log_weight = bel.log_weight
-        _, top_indices = jax.lax.top_k(log_weight, k=self.K)
+        # from 2K to K belief states
+        _, top_indices = jax.lax.top_k(bel.log_weight, k=self.K)
         bel = jax.tree_map(lambda x: jnp.take(x, top_indices, axis=0), bel)
+        # renormalise weights
         log_weights = bel.log_weight - jax.nn.logsumexp(bel.log_weight)
         log_weights = jnp.nan_to_num(log_weights, nan=-jnp.inf, neginf=-jnp.inf)
+
         bel = bel.replace(log_weight=log_weights)
 
         return bel
