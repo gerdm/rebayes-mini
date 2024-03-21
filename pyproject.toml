@@ -20,4 +20,5 @@ dependencies = [
     "jax>=0.4.2",
     "tfp-nightly[jax]",
     "chex",
+    "einops",
 ]
