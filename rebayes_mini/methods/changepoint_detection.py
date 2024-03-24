@@ -522,14 +522,14 @@ class BernoulliRegimeChange:
             mean=jnp.zeros((self.K, d)),
             cov=jnp.zeros((self.K, d, d)),
             log_weight=jnp.ones((self.K,)) * -jnp.inf,
-            runlength=jnp.zeros(self.K)
+            segment=jnp.zeros(self.K)
         )
 
         bel_init = states.BernoullChangeGaussState(
             mean=mean,
             cov=cov,
             log_weight=log_weight,
-            runlength=jnp.array(0)
+            segment=jnp.array(0)
         )
 
         bel = jax.tree_map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
@@ -560,11 +560,10 @@ class BernoulliRegimeChange:
         bel = bel.replace(
             mean=mean_posterior,
             cov=cov_posterior,
-            runlength=bel.runlength + has_changepoint
+            segment=bel.segment + has_changepoint
         )
         return bel
 
-    # @partial(jax.vmap, in_axes=(None, None, None, 0))
     def split_and_update(self, y, X, bel):
         """
         Update belief state and log-joint for a single observation

@@ -19,4 +19,4 @@ class BernoullChangeGaussState:
     mean: chex.Array
     cov: chex.Array
     log_weight: chex.Array
-    runlength: chex.Array
+    segment: chex.Array
