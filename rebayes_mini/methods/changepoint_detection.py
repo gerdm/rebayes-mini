@@ -622,3 +622,31 @@ class BernoulliRegimeChange:
 
         bel, hist = jax.lax.scan(_step, bel, (y, X))
         return bel, hist
+
+
+class GammaFilter:
+    def __init__(self, n_inner, ebayes_lr, beta, state_drift):
+        self.n_inner = n_inner
+        self.ebayes_lr = ebayes_lr # empirical bayes learning rate
+        self.beta = beta
+        self.state_drift = state_drift
+    
+    def predict_bel(self, eta, bel):
+        gamma = jnp.exp(-eta / 2)
+        dim = bel.mean.shape[0]
+
+        mean = gamma * bel.mean
+        cov = gamma ** 2 * bel.cov + (1 - gamma ** 2) * jnp.eye(dim) * self.beta
+        bel = bel.replace(mean=mean, cov=cov)
+        return bel
+
+    def update_bel(self, eta, y, X, bel):
+        bel_pred = self.predict_bel(eta, bel)
+        Kt = bel_pred.cov @ X / (X.T @ bel_pred.cov @ X + self.beta)
+
+        mean = bel_pred.mean + Kt * (y - X.T @ bel_pred.mean)
+        cov = bel_pred.cov - Kt * X.T @ bel_pred.cov
+        bel = bel.replace(mean=mean, cov=cov)
+    
+    def step(self, y, X, bel):
+        ...
