@@ -506,6 +506,7 @@ class BernoulliRegimeChange:
     """
     Bernoulli regime change based on the
     variational beam search (VBS) algorithm
+    TODO: split into base class and LM (linear model) class.
     """
     def __init__(self, p_change, K, beta, shock):
         self.p_change = p_change
@@ -599,7 +600,7 @@ class BernoulliRegimeChange:
         vmap_split_and_update = jax.vmap(self.split_and_update, in_axes=(None, None, 0))
         bel = vmap_split_and_update(y, X, bel)
         bel = jax.tree_map(lambda x: einops.rearrange(x, "a b ... -> (a b) ..."), bel)
-        # from 2K to K belief states
+        # from 2K to K belief states — the 'beam search'
         _, top_indices = jax.lax.top_k(bel.log_weight, k=self.K)
         bel = jax.tree_map(lambda x: jnp.take(x, top_indices, axis=0), bel)
         # renormalise weights
