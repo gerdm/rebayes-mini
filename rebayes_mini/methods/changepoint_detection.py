@@ -625,11 +625,12 @@ class BernoulliRegimeChange:
 
 
 class GammaFilter:
-    def __init__(self, n_inner, ebayes_lr, beta, state_drift):
+    def __init__(self, n_inner, ebayes_lr, beta, state_drift, deflate_mean=True):
         self.n_inner = n_inner
         self.ebayes_lr = ebayes_lr # empirical bayes learning rate
         self.beta = beta
         self.state_drift = state_drift
+        self.deflate_mean = deflate_mean * 1.0
 
     def init_bel(self, mean, cov, eta=0.0):
         """
@@ -643,11 +644,11 @@ class GammaFilter:
         return bel
     
     def predict_bel(self, eta, bel):
-        # eta = eta * (eta >= 0) # ensure eta is non-negative. See (12)
         gamma = jnp.exp(-eta / 2)
+        # gamma = jax.nn.sigmoid(eta)
         dim = bel.mean.shape[0]
 
-        mean = gamma * bel.mean
+        mean = (gamma ** self.deflate_mean) * bel.mean
         cov = gamma ** 2 * bel.cov + (1 - gamma ** 2) * jnp.eye(dim) * self.state_drift
         bel = bel.replace(mean=mean, cov=cov)
         return bel
@@ -659,8 +660,8 @@ class GammaFilter:
         log_p_pred = distrax.Normal(mean, cov).log_prob(y)
         return log_p_pred
     
-    def update_bel(self, eta, y, X, bel):
-        bel_pred = self.predict_bel(eta, bel)
+    def update_bel(self, y, X, bel):
+        bel_pred = self.predict_bel(bel.eta, bel)
         Kt = bel_pred.cov @ X / (X.T @ bel_pred.cov @ X + self.beta)
 
         mean = bel_pred.mean + Kt * (y - X.T @ bel_pred.mean)
@@ -675,11 +676,12 @@ class GammaFilter:
             eta = bel.eta
             grad = grad_log_predict_density(eta, y, X, bel)
             eta = eta + self.ebayes_lr * grad
+            eta = eta * (eta > 0)
             bel = bel.replace(eta=eta)
             return bel
         
         bel = jax.lax.fori_loop(0, self.n_inner, _inner_pred, bel)
-        bel = self.update_bel(bel.eta, y, X, bel)
+        bel = self.update_bel(y, X, bel)
         return bel
         
 
