@@ -640,6 +640,13 @@ class GammaFilter:
         bel = bel.replace(mean=mean, cov=cov)
         return bel
 
+    def log_predict_density(self, eta, y, X, bel):
+        bel = self.predict_bel(eta, bel)
+        mean = bel.mean @ X
+        cov = X.T @ bel.cov @ X + self.beta
+        log_p_pred = distrax.Normal(mean, cov).log_prob(y)
+        return log_p_pred
+    
     def update_bel(self, eta, y, X, bel):
         bel_pred = self.predict_bel(eta, bel)
         Kt = bel_pred.cov @ X / (X.T @ bel_pred.cov @ X + self.beta)
@@ -649,4 +656,14 @@ class GammaFilter:
         bel = bel.replace(mean=mean, cov=cov)
     
     def step(self, y, X, bel):
-        ...
+        grad_log_predict_density = jax.grad(self.log_predict_density, argnums=0)
+
+        def _inner_pred(i, bel):
+            grad = grad_log_predict_density(eta, y, X, bel)
+            eta = eta + self.ebayes_lr * grad
+            bel = bel.replace(eta=eta)
+            return bel
+        
+        bel = jax.lax.fori_loop(0, self.n_inner, _inner_pred, bel)
+        bel = self.update_bel(bel.eta, y, X, bel)
+        
