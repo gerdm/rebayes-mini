@@ -630,13 +630,25 @@ class GammaFilter:
         self.ebayes_lr = ebayes_lr # empirical bayes learning rate
         self.beta = beta
         self.state_drift = state_drift
+
+    def init_bel(self, mean, cov, eta=0.0):
+        """
+        Initialize belief state
+        """
+        bel = states.GammaFilterState(
+            mean=mean,
+            cov=cov,
+            eta=eta
+        )
+        return bel
     
     def predict_bel(self, eta, bel):
+        # eta = eta * (eta >= 0) # ensure eta is non-negative. See (12)
         gamma = jnp.exp(-eta / 2)
         dim = bel.mean.shape[0]
 
         mean = gamma * bel.mean
-        cov = gamma ** 2 * bel.cov + (1 - gamma ** 2) * jnp.eye(dim) * self.beta
+        cov = gamma ** 2 * bel.cov + (1 - gamma ** 2) * jnp.eye(dim) * self.state_drift
         bel = bel.replace(mean=mean, cov=cov)
         return bel
 
@@ -654,11 +666,13 @@ class GammaFilter:
         mean = bel_pred.mean + Kt * (y - X.T @ bel_pred.mean)
         cov = bel_pred.cov - Kt * X.T @ bel_pred.cov
         bel = bel.replace(mean=mean, cov=cov)
+        return bel
     
     def step(self, y, X, bel):
         grad_log_predict_density = jax.grad(self.log_predict_density, argnums=0)
 
         def _inner_pred(i, bel):
+            eta = bel.eta
             grad = grad_log_predict_density(eta, y, X, bel)
             eta = eta + self.ebayes_lr * grad
             bel = bel.replace(eta=eta)
@@ -666,4 +680,17 @@ class GammaFilter:
         
         bel = jax.lax.fori_loop(0, self.n_inner, _inner_pred, bel)
         bel = self.update_bel(bel.eta, y, X, bel)
+        return bel
         
+
+    def scan(self, y, X, bel, callback_fn=None):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        def _step(bel, yX):
+            y, X = yX
+            bel_posterior = self.step(y, X, bel)
+            out = callback_fn(bel_posterior, bel, y, X)
+
+            return bel_posterior, out
+
+        bel, hist = jax.lax.scan(_step, bel, (y, X))
+        return bel, hist

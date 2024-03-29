@@ -20,3 +20,10 @@ class BernoullChangeGaussState:
     cov: chex.Array
     log_weight: chex.Array
     segment: chex.Array
+
+
+@chex.dataclass
+class GammaFilterState:
+    mean: chex.Array
+    cov: chex.Array
+    eta: float
