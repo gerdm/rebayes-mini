@@ -422,13 +422,14 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         Update belief state and log-joint for a single observation
         """
         log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
-        bel = self.update_bel(y, X, bel, bel_prior, top_indices)
-        runlengths = self.update_runlengths(bel, top_indices)
-        bel = bel.replace(log_joint=log_joint, runlength=runlengths)
+        bel_posterior = self.update_bel(y, X, bel, bel_prior, top_indices)
 
-        out = callback_fn(bel, bel_prior, y, X, top_indices)
+        runlengths = self.update_runlengths(bel_posterior, top_indices)
+        bel_posterior = bel_posterior.replace(log_joint=log_joint, runlength=runlengths)
 
-        return bel, out
+        out = callback_fn(bel_posterior, bel, y, X, top_indices)
+
+        return bel_posterior, out
 
 
     def scan(self, y, X, bel, callback_fn=None):
