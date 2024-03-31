@@ -444,7 +444,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         return bel, hist
 
 
-class LM_LMBOCD(LowMemoryBayesianOnlineChangepoint):
+class LinearModelBOCD(LowMemoryBayesianOnlineChangepoint):
     """
     Low-memory LM-BOCD
     """
