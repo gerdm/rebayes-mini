@@ -653,27 +653,30 @@ class LinearModelBRC(BernoulliRegimeChange):
 
 
 class GammaFilter(ABC):
-    def __init__(self, n_inner, ebayes_lr, beta, state_drift, deflate_mean=True):
+    def __init__(self, n_inner, ebayes_lr, state_drift, deflate_mean=True):
         self.n_inner = n_inner
         self.ebayes_lr = ebayes_lr # empirical bayes learning rate
-        self.beta = beta
         self.state_drift = state_drift
         self.deflate_mean = deflate_mean * 1.0
 
-    def init_bel(self, mean, cov, eta=0.0):
+    @abstractmethod
+    def init_bel(self):
         """
         Initialize belief state
         """
-        bel = states.GammaFilterState(
-            mean=mean,
-            cov=cov,
-            eta=eta
-        )
-        return bel
-    
+        ...
+
+    @abstractmethod
+    def log_posterior_predictive(self, eta, y, X, bel):
+        ...
+
+
+    @abstractmethod
+    def update_bel(self, y, X, bel):
+        ...
+
     def predict_bel(self, eta, bel):
         gamma = jnp.exp(-eta / 2)
-        # gamma = jax.nn.sigmoid(eta)
         dim = bel.mean.shape[0]
 
         mean = (gamma ** self.deflate_mean) * bel.mean
@@ -681,37 +684,22 @@ class GammaFilter(ABC):
         bel = bel.replace(mean=mean, cov=cov)
         return bel
 
-    def log_predict_density(self, eta, y, X, bel):
-        bel = self.predict_bel(eta, bel)
-        mean = bel.mean @ X
-        cov = X.T @ bel.cov @ X + self.beta
-        log_p_pred = distrax.Normal(mean, cov).log_prob(y)
-        return log_p_pred
-    
-    def update_bel(self, y, X, bel):
-        bel_pred = self.predict_bel(bel.eta, bel)
-        Kt = bel_pred.cov @ X / (X.T @ bel_pred.cov @ X + self.beta)
 
-        mean = bel_pred.mean + Kt * (y - X.T @ bel_pred.mean)
-        cov = bel_pred.cov - Kt * X.T @ bel_pred.cov
-        bel = bel.replace(mean=mean, cov=cov)
-        return bel
-    
     def step(self, y, X, bel):
-        grad_log_predict_density = jax.grad(self.log_predict_density, argnums=0)
+        grad_log_predict_density = jax.grad(self.log_posterior_predictive, argnums=0)
 
         def _inner_pred(i, bel):
             eta = bel.eta
             grad = grad_log_predict_density(eta, y, X, bel)
             eta = eta + self.ebayes_lr * grad
-            eta = eta * (eta > 0)
+            eta = eta * (eta > 0) # hard threshold
             bel = bel.replace(eta=eta)
             return bel
-        
+
         bel = jax.lax.fori_loop(0, self.n_inner, _inner_pred, bel)
         bel = self.update_bel(y, X, bel)
         return bel
-        
+
 
     def scan(self, y, X, bel, callback_fn=None):
         callback_fn = callbacks.get_null if callback_fn is None else callback_fn
@@ -724,3 +712,38 @@ class GammaFilter(ABC):
 
         bel, hist = jax.lax.scan(_step, bel, (y, X))
         return bel, hist
+
+
+class LinearModelGKF(GammaFilter):
+    def __init__(self, n_inner, ebayes_lr, beta, state_drift, deflate_mean=True):
+        super().__init__(n_inner, ebayes_lr, state_drift, deflate_mean)
+        self.beta = beta
+
+    def init_bel(self, mean, cov, eta=0.0):
+        """
+        Initialize belief state
+        """
+        bel = states.GammaFilterState(
+            mean=mean,
+            cov=cov,
+            eta=eta
+        )
+        return bel
+
+
+    def log_posterior_predictive(self, eta, y, X, bel):
+        bel = self.predict_bel(eta, bel)
+        mean = bel.mean @ X
+        cov = X.T @ bel.cov @ X + self.beta
+        log_p_pred = distrax.Normal(mean, cov).log_prob(y)
+        return log_p_pred
+
+
+    def update_bel(self, y, X, bel):
+        bel_pred = self.predict_bel(bel.eta, bel)
+        Kt = bel_pred.cov @ X / (X.T @ bel_pred.cov @ X + self.beta)
+
+        mean = bel_pred.mean + Kt * (y - X.T @ bel_pred.mean)
+        cov = bel_pred.cov - Kt * X.T @ bel_pred.cov
+        bel = bel.replace(mean=mean, cov=cov)
+        return bel
