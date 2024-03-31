@@ -444,39 +444,6 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         return bel, hist
 
 
-class LinearModelBOCD(LowMemoryBayesianOnlineChangepoint):
-    """
-    Low-memory LM-BOCD
-    """
-    def __init__(self, p_change, K, beta):
-        super().__init__(p_change, K)
-        self.beta = beta
-
-
-    def init_bel(self, mean, cov, log_joint_init):
-        """
-        Initialize belief state
-        """
-        d, *_ = mean.shape
-        bel = states.BOCDGaussState(
-            mean=jnp.zeros((self.K, d)),
-            cov=jnp.zeros((self.K, d, d)),
-            log_joint=jnp.ones((self.K,)) * -jnp.inf,
-            runlength=jnp.zeros(self.K)
-        )
-
-        bel_init = states.BOCDGaussState(
-            mean=mean,
-            cov=cov,
-            log_joint=log_joint_init,
-            runlength=jnp.array(0)
-        )
-
-        bel = jax.tree_map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
-
-        return bel
-
-
     @partial(jax.jit, static_argnums=(0,))
     def compute_log_posterior_predictive(self, y, X, bel):
         """
@@ -592,65 +559,6 @@ class BernoulliRegimeChange(ABC):
         return bel, hist
 
 
-class LinearModelBRC(BernoulliRegimeChange):
-    def __init__(self, p_change, K, beta, shock):
-        super().__init__(p_change, K, shock)
-        self.beta = beta
-
-
-    def init_bel(self, mean, cov, log_weight):
-        """
-        Initialize belief state
-        """
-        d, *_ = mean.shape
-        bel = states.BernoullChangeGaussState(
-            mean=jnp.zeros((self.K, d)),
-            cov=jnp.zeros((self.K, d, d)),
-            log_weight=jnp.ones((self.K,)) * -jnp.inf,
-            segment=jnp.zeros(self.K)
-        )
-
-        bel_init = states.BernoullChangeGaussState(
-            mean=mean,
-            cov=cov,
-            log_weight=log_weight,
-            segment=jnp.array(0)
-        )
-
-        bel = jax.tree_map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
-
-        return bel
-
-
-    def update_bel(self, y, X, bel, has_changepoint):
-        cov_previous = bel.cov
-        mean_previous = bel.mean
-
-        shock = self.shock ** has_changepoint
-        prec_previous = shock * jnp.linalg.inv(cov_previous)
-
-        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
-        cov_posterior = jnp.linalg.inv(prec_posterior)
-        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
-
-        bel = bel.replace(
-            mean=mean_posterior,
-            cov=cov_posterior,
-            segment=bel.segment + has_changepoint
-        )
-        return bel
-
-
-    @partial(jax.jit, static_argnums=(0,))
-    def compute_log_posterior_predictive(self, y, X, bel):
-        """
-        Compute log-posterior predictive for a Gaussian with known variance
-        """
-        mean = bel.mean @ X
-        scale = 1 / self.beta + X @  bel.cov @ X
-        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
-        return log_p_pred
-
 
 class GammaFilter(ABC):
     def __init__(self, n_inner, ebayes_lr, state_drift, deflate_mean=True):
@@ -712,6 +620,100 @@ class GammaFilter(ABC):
 
         bel, hist = jax.lax.scan(_step, bel, (y, X))
         return bel, hist
+
+
+class LinearModelBOCD(LowMemoryBayesianOnlineChangepoint):
+    """
+    Low-memory LM-BOCD
+    """
+    def __init__(self, p_change, K, beta):
+        super().__init__(p_change, K)
+        self.beta = beta
+
+
+    def init_bel(self, mean, cov, log_joint_init):
+        """
+        Initialize belief state
+        """
+        d, *_ = mean.shape
+        bel = states.BOCDGaussState(
+            mean=jnp.zeros((self.K, d)),
+            cov=jnp.zeros((self.K, d, d)),
+            log_joint=jnp.ones((self.K,)) * -jnp.inf,
+            runlength=jnp.zeros(self.K)
+        )
+
+        bel_init = states.BOCDGaussState(
+            mean=mean,
+            cov=cov,
+            log_joint=log_joint_init,
+            runlength=jnp.array(0)
+        )
+
+        bel = jax.tree_map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
+
+        return bel
+
+
+class LinearModelBRC(BernoulliRegimeChange):
+    def __init__(self, p_change, K, beta, shock):
+        super().__init__(p_change, K, shock)
+        self.beta = beta
+
+
+    def init_bel(self, mean, cov, log_weight):
+        """
+        Initialize belief state
+        """
+        d, *_ = mean.shape
+        bel = states.BernoullChangeGaussState(
+            mean=jnp.zeros((self.K, d)),
+            cov=jnp.zeros((self.K, d, d)),
+            log_weight=jnp.ones((self.K,)) * -jnp.inf,
+            segment=jnp.zeros(self.K)
+        )
+
+        bel_init = states.BernoullChangeGaussState(
+            mean=mean,
+            cov=cov,
+            log_weight=log_weight,
+            segment=jnp.array(0)
+        )
+
+        bel = jax.tree_map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
+
+        return bel
+
+
+    def update_bel(self, y, X, bel, has_changepoint):
+        cov_previous = bel.cov
+        mean_previous = bel.mean
+
+        shock = self.shock ** has_changepoint
+        prec_previous = shock * jnp.linalg.inv(cov_previous)
+
+        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
+        cov_posterior = jnp.linalg.inv(prec_posterior)
+        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
+
+        bel = bel.replace(
+            mean=mean_posterior,
+            cov=cov_posterior,
+            segment=bel.segment + has_changepoint
+        )
+        return bel
+
+
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_log_posterior_predictive(self, y, X, bel):
+        """
+        Compute log-posterior predictive for a Gaussian with known variance
+        """
+        mean = bel.mean @ X
+        scale = 1 / self.beta + X @  bel.cov @ X
+        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
+        return log_p_pred
+
 
 
 class LinearModelGKF(GammaFilter):
