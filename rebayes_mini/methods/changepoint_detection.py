@@ -444,32 +444,6 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         return bel, hist
 
 
-    @partial(jax.jit, static_argnums=(0,))
-    def compute_log_posterior_predictive(self, y, X, bel):
-        """
-        Compute log-posterior predictive for a Gaussian with known variance
-        """
-        mean = bel.mean @ X
-        scale = 1 / self.beta + X @  bel.cov @ X
-        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
-        return log_p_pred
-
-
-    @partial(jax.vmap, in_axes=(None, None, None, 0))
-    def vmap_update_bel(self, y, X, bel):
-        cov_previous = bel.cov
-        mean_previous = bel.mean
-
-        prec_previous = jnp.linalg.inv(cov_previous)
-
-        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
-        cov_posterior = jnp.linalg.inv(prec_posterior)
-        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
-
-        bel = bel.replace(mean=mean_posterior, cov=cov_posterior)
-        return bel
-
-
 class BernoulliRegimeChange(ABC):
     """
     Bernoulli regime change based on the
@@ -551,7 +525,7 @@ class BernoulliRegimeChange(ABC):
         def _step(bel, yX):
             y, X = yX
             bel_posterior = self.step(y, X, bel)
-            out = callback_fn(y, X, bel_posterior, bel)
+            out = callback_fn(bel_posterior, bel, y, X)
 
             return bel_posterior, out
 
@@ -654,6 +628,31 @@ class LinearModelBOCD(LowMemoryBayesianOnlineChangepoint):
 
         return bel
 
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_log_posterior_predictive(self, y, X, bel):
+        """
+        Compute log-posterior predictive for a Gaussian with known variance
+        """
+        mean = bel.mean @ X
+        scale = 1 / self.beta + X @  bel.cov @ X
+        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
+        return log_p_pred
+
+
+    @partial(jax.vmap, in_axes=(None, None, None, 0))
+    def vmap_update_bel(self, y, X, bel):
+        cov_previous = bel.cov
+        mean_previous = bel.mean
+
+        prec_previous = jnp.linalg.inv(cov_previous)
+
+        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
+        cov_posterior = jnp.linalg.inv(prec_posterior)
+        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
+
+        bel = bel.replace(mean=mean_posterior, cov=cov_posterior)
+        return bel
+
 
 class LinearModelBRC(BernoulliRegimeChange):
     def __init__(self, p_change, K, beta, shock):
@@ -719,7 +718,7 @@ class LinearModelBRC(BernoulliRegimeChange):
 class LinearModelGKF(GammaFilter):
     def __init__(self, n_inner, ebayes_lr, beta, state_drift, deflate_mean=True):
         super().__init__(n_inner, ebayes_lr, state_drift, deflate_mean)
-        self.beta = beta
+        self.beta = 1/beta # variance to precision
 
     def init_bel(self, mean, cov, eta=0.0):
         """
