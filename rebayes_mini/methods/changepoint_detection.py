@@ -534,7 +534,7 @@ class BernoulliRegimeChange(ABC):
 
 
 
-class GammaFilter(ABC):
+class WeightedKalmanFilter(ABC):
     def __init__(self, n_inner, ebayes_lr, state_drift, deflate_mean=True):
         self.n_inner = n_inner
         self.ebayes_lr = ebayes_lr # empirical bayes learning rate
@@ -715,7 +715,7 @@ class LinearModelBRC(BernoulliRegimeChange):
 
 
 
-class LinearModelGKF(GammaFilter):
+class LinearModelWKF(WeightedKalmanFilter):
     def __init__(self, n_inner, ebayes_lr, beta, state_drift, deflate_mean=True):
         super().__init__(n_inner, ebayes_lr, state_drift, deflate_mean)
         self.beta = 1/beta # variance to precision
