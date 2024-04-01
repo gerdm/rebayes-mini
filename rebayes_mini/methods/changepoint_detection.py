@@ -596,6 +596,68 @@ class WeightedKalmanFilter(ABC):
         return bel, hist
 
 
+class GammaFilter(ABC):
+    def __init__(self, n_inner, ebayes_lr, state_drift=1.0):
+        self.n_inner = n_inner
+        self.ebayes_lr = ebayes_lr # empirical bayes learning rate
+        self.state_drift = state_drift
+
+    @abstractmethod
+    def init_bel(self):
+        """
+        Initialize belief state
+        """
+        ...
+
+    @abstractmethod
+    def log_posterior_predictive(self, eta, y, X, bel):
+        ...
+
+
+    @abstractmethod
+    def update_bel(self, y, X, bel):
+        ...
+
+    def predict_bel(self, eta, bel):
+        # gamma = jnp.exp(-eta / 2)
+        gamma = jax.nn.sigmoid(eta)
+        dim = bel.mean.shape[0]
+
+        mean = bel.mean
+        # cov = bel.cov + gamma * jnp.eye(dim) * self.state_drift
+        cov = gamma * bel.cov + (1 - gamma) * jnp.eye(dim) * self.state_drift
+        bel = bel.replace(mean=mean, cov=cov)
+        return bel
+
+
+    def step(self, y, X, bel):
+        grad_log_predict_density = jax.grad(self.log_posterior_predictive, argnums=0)
+
+        def _inner_pred(i, bel):
+            eta = bel.eta
+            grad = grad_log_predict_density(eta, y, X, bel)
+            eta = eta + self.ebayes_lr * grad
+            bel = bel.replace(eta=eta)
+            return bel
+
+        bel = jax.lax.fori_loop(0, self.n_inner, _inner_pred, bel)
+        bel = self.update_bel(y, X, bel)
+        return bel
+
+
+    def scan(self, y, X, bel, callback_fn=None):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        def _step(bel, yX):
+            y, X = yX
+            bel_posterior = self.step(y, X, bel)
+            out = callback_fn(bel_posterior, bel, y, X)
+
+            return bel_posterior, out
+
+        bel, hist = jax.lax.scan(_step, bel, (y, X))
+        return bel, hist
+
+
 class LinearModelBOCD(LowMemoryBayesianOnlineChangepoint):
     """
     Low-memory LM-BOCD
@@ -737,6 +799,46 @@ class LinearModelWKF(WeightedKalmanFilter):
         mean = bel.mean @ X
         cov = X.T @ bel.cov @ X + self.beta
         log_p_pred = distrax.Normal(mean, cov).log_prob(y)
+        return log_p_pred
+
+
+    def update_bel(self, y, X, bel):
+        bel_pred = self.predict_bel(bel.eta, bel)
+        Kt = bel_pred.cov @ X / (X.T @ bel_pred.cov @ X + self.beta)
+
+        mean = bel_pred.mean + Kt * (y - X.T @ bel_pred.mean)
+        cov = bel_pred.cov - Kt * X.T @ bel_pred.cov
+        bel = bel.replace(mean=mean, cov=cov)
+        return bel
+
+
+class LinearModelGKF(GammaFilter):
+    def __init__(self, n_inner, ebayes_lr, beta, state_drift, a, b):
+        super().__init__(n_inner, ebayes_lr, state_drift)
+        self.beta = 1/beta # variance to precision
+        self.a = a
+        self.b = b
+
+    def init_bel(self, mean, cov, eta=0.0):
+        """
+        Initialize belief state
+        """
+        bel = states.GammaFilterState(
+            mean=mean,
+            cov=cov,
+            eta=eta
+        )
+        return bel
+
+
+    def log_posterior_predictive(self, eta, y, X, bel):
+        bel = self.predict_bel(eta, bel)
+        mean = bel.mean @ X
+        cov = X.T @ bel.cov @ X + self.beta
+        log_p_pred = distrax.Normal(mean, cov).log_prob(y)
+        # log_p_pred = log_p_pred + distrax.Gamma(2.0, 1.0).log_prob(jnp.exp(-eta/2))
+        gamma = jax.nn.sigmoid(eta)
+        log_p_pred = log_p_pred + distrax.Beta(self.a, self.b).log_prob(gamma)
         return log_p_pred
 
 
