@@ -364,9 +364,9 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
 
 
     @abstractmethod
-    def vmap_update_bel(self, y, X, bel):
+    def update_bel(self, y, X, bel):
         """
-        Vmap over bel state. y and X are single observations
+        Update belief state (posterior)
         """
         ...
 
@@ -395,12 +395,13 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         return log_joint, top_indices
 
 
-    def update_bel(self, y, X, bel, bel_prior, top_indices):
+    def update_bel_indices(self, y, X, bel, bel_prior, top_indices):
         """
-        Update belief state (posterior) for a given runlength
+        Update belief state (posterior) for given runlengths
         """
         # Update all belief states
-        bel = self.vmap_update_bel(y, X, bel)
+        vmap_update_bel = jax.vmap(self.update_bel, in_axes=(None, None, 0))
+        bel = vmap_update_bel(y, X, bel)
         # Increment belief state by adding bel_prior and keeping top_indices
         bel = jax.tree_map(lambda beliefs, prior: jnp.concatenate([prior[None], beliefs]), bel, bel_prior)
         bel = jax.tree_map(lambda param: jnp.take(param, top_indices, axis=0), bel)
@@ -422,7 +423,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         Update belief state and log-joint for a single observation
         """
         log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
-        bel_posterior = self.update_bel(y, X, bel, bel_prior, top_indices)
+        bel_posterior = self.update_bel_indices(y, X, bel, bel_prior, top_indices)
 
         runlengths = self.update_runlengths(bel_posterior, top_indices)
         bel_posterior = bel_posterior.replace(log_joint=log_joint, runlength=runlengths)
@@ -701,8 +702,7 @@ class LinearModelBOCD(LowMemoryBayesianOnlineChangepoint):
         return log_p_pred
 
 
-    @partial(jax.vmap, in_axes=(None, None, None, 0))
-    def vmap_update_bel(self, y, X, bel):
+    def update_bel(self, y, X, bel):
         cov_previous = bel.cov
         mean_previous = bel.mean
 
