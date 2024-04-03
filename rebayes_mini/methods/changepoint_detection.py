@@ -456,7 +456,8 @@ class AdaptiveBayesianOnlineChangepoint(LowMemoryBayesianOnlineChangepoint):
         """
         ix_max = jnp.nanargmax(bel.log_joint)
         bel_prior = jax.tree_map(lambda x: x[ix_max], bel)
-        bel_prior = bel_prior.replace(cov=bel_prior.cov / self.shock)
+        # TODO: double check
+        bel_prior = bel_prior.replace(cov=_.cov, log_joint=_.log_joint, runlength=_.runlength)
 
         log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
         bel_posterior = self.update_bel_indices(y, X, bel, bel_prior, top_indices)
