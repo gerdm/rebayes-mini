@@ -560,7 +560,7 @@ class BernoulliRegimeChange(ABC):
 
 
 
-class WeightedKalmanFilter(ABC):
+class KalmanFilterAdaptiveDynamics(ABC):
     def __init__(self, n_inner, ebayes_lr, state_drift, deflate_mean=True):
         self.n_inner = n_inner
         self.ebayes_lr = ebayes_lr # empirical bayes learning rate
@@ -622,7 +622,7 @@ class WeightedKalmanFilter(ABC):
         return bel, hist
 
 
-class GammaFilter(ABC):
+class KalmanFilterBetaAdaptiveDynamics(ABC):
     def __init__(self, n_inner, ebayes_lr, state_drift=1.0):
         self.n_inner = n_inner
         self.ebayes_lr = ebayes_lr # empirical bayes learning rate
@@ -856,7 +856,7 @@ class LinearModelBRC(BernoulliRegimeChange):
 
 
 
-class LinearModelWKF(WeightedKalmanFilter):
+class LinearModelKFA(KalmanFilterAdaptiveDynamics):
     def __init__(self, n_inner, ebayes_lr, beta, state_drift, deflate_mean=True):
         super().__init__(n_inner, ebayes_lr, state_drift, deflate_mean)
         self.beta = 1/beta # variance to precision
@@ -891,7 +891,7 @@ class LinearModelWKF(WeightedKalmanFilter):
         return bel
 
 
-class LinearModelGKF(GammaFilter):
+class LinearModelKFBA(KalmanFilterBetaAdaptiveDynamics):
     def __init__(self, n_inner, ebayes_lr, beta, state_drift, a, b):
         super().__init__(n_inner, ebayes_lr, state_drift)
         self.beta = 1/beta # variance to precision
