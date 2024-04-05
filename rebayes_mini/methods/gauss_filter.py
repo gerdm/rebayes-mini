@@ -56,7 +56,7 @@ class KalmanFilter:
             xs = y
         else:
             def _step(bel, xs):
-                x, y = xs
+                y, x = xs
                 bel, output = self.step(bel, y, x, callback_fn)
                 return bel, output
             xs = (y, X)
