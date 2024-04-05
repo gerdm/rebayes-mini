@@ -41,7 +41,7 @@ class BayesianOnlineChangepointDetection(ABC):
 
 
     def update_log_joint_reset(self, t, ell, y, X, bel_hist, log_joint_hist):
-        bel_prior = jax.tree_map(lambda x: x[0], bel_hist)
+        bel_prior = jax.tree.map(lambda x: x[0], bel_hist)
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
 
         if t == 0:
@@ -61,7 +61,7 @@ class BayesianOnlineChangepointDetection(ABC):
         ix_update = self.get_ix(t, ell)
         ix_prev = self.get_ix(t-1, ell-1)
 
-        bel_posterior = jax.tree_map(lambda hist: hist[ix_prev], bel_hist)
+        bel_posterior = jax.tree.map(lambda hist: hist[ix_prev], bel_hist)
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel_posterior)
 
         log_joint = log_p_pred + log_joint_hist[ix_prev] + jnp.log(1 - self.p_change)
@@ -83,11 +83,11 @@ class BayesianOnlineChangepointDetection(ABC):
         ix_prev = self.get_ix(t-1, ell-1)
         ix_update = self.get_ix(t, ell)
 
-        bel_previous_single = jax.tree_map(lambda hist: hist[ix_prev], bel_hist)
+        bel_previous_single = jax.tree.map(lambda hist: hist[ix_prev], bel_hist)
         bel_posterior_single = self.update_bel_single(y, X, bel_previous_single)
 
         # update belief state
-        bel_hist = jax.tree_map(lambda hist, element: hist.at[ix_update].set(element), bel_hist, bel_posterior_single)
+        bel_hist = jax.tree.map(lambda hist, element: hist.at[ix_update].set(element), bel_hist, bel_posterior_single)
         return bel_hist
 
 
@@ -95,8 +95,8 @@ class BayesianOnlineChangepointDetection(ABC):
     def update_bel_reset(self, t, ell, y, X, bel_hist):
         ix_update = self.get_ix(t, ell)
 
-        bel_init_single = jax.tree_map(lambda x: x[0], bel_hist)
-        bel_hist = jax.tree_map(lambda hist, element: hist.at[ix_update].set(element), bel_hist, bel_init_single)
+        bel_init_single = jax.tree.map(lambda x: x[0], bel_hist)
+        bel_hist = jax.tree.map(lambda hist, element: hist.at[ix_update].set(element), bel_hist, bel_init_single)
 
         return bel_hist
 
@@ -192,7 +192,7 @@ class LM_BOCD(BayesianOnlineChangepointDetection):
         hist_cov = jnp.zeros((size_filter, d, d))
 
         bel_hist = states.GaussState(mean=hist_mean, cov=hist_cov)
-        bel_hist = jax.tree_map(lambda hist, init: hist.at[0].set(init), bel_hist, bel_init)
+        bel_hist = jax.tree.map(lambda hist, init: hist.at[0].set(init), bel_hist, bel_init)
         return bel_hist
 
 
@@ -278,8 +278,8 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         vmap_update_bel = jax.vmap(self.update_bel, in_axes=(None, None, 0))
         bel = vmap_update_bel(y, X, bel)
         # Increment belief state by adding bel_prior and keeping top_indices
-        bel = jax.tree_map(lambda beliefs, prior: jnp.concatenate([prior[None], beliefs]), bel, bel_prior)
-        bel = jax.tree_map(lambda param: jnp.take(param, top_indices, axis=0), bel)
+        bel = jax.tree.map(lambda beliefs, prior: jnp.concatenate([prior[None], beliefs]), bel, bel_prior)
+        bel = jax.tree.map(lambda param: jnp.take(param, top_indices, axis=0), bel)
         return bel
 
 
@@ -310,7 +310,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
 
     def scan(self, y, X, bel, callback_fn=None):
         callback_fn = callbacks.get_null if callback_fn is None else callback_fn
-        bel_prior = jax.tree_map(lambda x: x[0], bel)
+        bel_prior = jax.tree.map(lambda x: x[0], bel)
         def _step(bel, yX):
             y, X = yX
             bel, out = self.step(y, X, bel, bel_prior, callback_fn)
@@ -330,7 +330,7 @@ class AdaptiveBayesianOnlineChangepoint(LowMemoryBayesianOnlineChangepoint):
         Update belief state and log-joint for a single observation
         """
         ix_max = jnp.nanargmax(bel.log_joint)
-        bel_prior = jax.tree_map(lambda x: x[ix_max], bel)
+        bel_prior = jax.tree.map(lambda x: x[ix_max], bel)
         new_cov = jax.lax.cond(self.shock > 0, lambda S: S / self.shock, lambda S: _.cov, bel_prior.cov)
         bel_prior = bel_prior.replace(
             cov=new_cov,
@@ -403,7 +403,7 @@ class BernoulliRegimeChange(ABC):
         bel_down = bel_down.replace(log_weight=log_weight_down)
 
         # Combine
-        bel_combined = jax.tree_map(lambda x, y: jnp.stack([x, y]), bel_up, bel_down)
+        bel_combined = jax.tree.map(lambda x, y: jnp.stack([x, y]), bel_up, bel_down)
         return bel_combined
 
 
@@ -411,10 +411,10 @@ class BernoulliRegimeChange(ABC):
         # from K to 2K belief states
         vmap_split_and_update = jax.vmap(self.split_and_update, in_axes=(None, None, 0))
         bel = vmap_split_and_update(y, X, bel)
-        bel = jax.tree_map(lambda x: einops.rearrange(x, "a b ... -> (a b) ..."), bel)
+        bel = jax.tree.map(lambda x: einops.rearrange(x, "a b ... -> (a b) ..."), bel)
         # from 2K to K belief states — the 'beam search'
         _, top_indices = jax.lax.top_k(bel.log_weight, k=self.K)
-        bel = jax.tree_map(lambda x: jnp.take(x, top_indices, axis=0), bel)
+        bel = jax.tree.map(lambda x: jnp.take(x, top_indices, axis=0), bel)
         # renormalise weights
         log_weights = bel.log_weight - jax.nn.logsumexp(bel.log_weight)
         log_weights = jnp.nan_to_num(log_weights, nan=-jnp.inf, neginf=-jnp.inf)
@@ -587,7 +587,7 @@ class LinearModelBOCD(LowMemoryBayesianOnlineChangepoint):
             runlength=jnp.array(0)
         )
 
-        bel = jax.tree_map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
+        bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
 
         return bel
 
@@ -641,7 +641,7 @@ class LinearModelABOCD(AdaptiveBayesianOnlineChangepoint):
             runlength=jnp.array(0)
         )
 
-        bel = jax.tree_map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
+        bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
 
         return bel
 
@@ -695,7 +695,7 @@ class LinearModelBRC(BernoulliRegimeChange):
             segment=jnp.array(0)
         )
 
-        bel = jax.tree_map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
+        bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
 
         return bel
 
