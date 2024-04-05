@@ -222,131 +222,6 @@ class LM_BOCD(BayesianOnlineChangepointDetection):
         return log_p_pred
 
 
-class WLLM_BOCD(LM_BOCD):
-    """
-    Weighted-likelihood LM-BOCD
-    """
-    def __init__(self, p_change, beta, c):
-        super().__init__(p_change, beta)
-        self.c = c
-
-    @partial(jax.jit, static_argnums=(0,))
-    def imq_kernel(self, residual):
-        """
-        Inverse multi-quadratic kernel
-        """
-        return 1 / jnp.sqrt(1 + residual ** 2 / self.c ** 2)
-
-
-    @partial(jax.jit, static_argnums=(0,))
-    def update_bel_single(self, y, X, bel):
-        cov_previous = bel.cov
-        mean_previous = bel.mean
-
-        prec_previous = jnp.linalg.inv(cov_previous)
-
-        Wt = self.imq_kernel(y - X @ mean_previous)
-        prec_posterior = prec_previous + Wt ** 2 * self.beta * jnp.outer(X, X)
-        cov_posterior = jnp.linalg.inv(prec_posterior)
-        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + Wt ** 2 * self.beta * X * y)
-
-        bel = states.GaussState(mean=mean_posterior, cov=cov_posterior)
-        return bel
-
-
-    @partial(jax.jit, static_argnums=(0,))
-    def compute_log_posterior_predictive(self, y, X, bel):
-        """
-        Compute log-posterior predictive for a Gaussian with known variance
-        """
-        mean = bel.mean @ X
-        residual = y - mean
-        Wt = self.imq_kernel(residual)
-
-        scale = 1 / (self.beta * Wt ** 2) + X @ bel.cov @ X
-        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
-        return log_p_pred
-
-
-class AWLLM_BOCD(LM_BOCD):
-    """
-    Adaptive, Weighted-likelihood LM-BOCD
-    """
-    def __init__(self, p_change, beta, c, shock_val):
-        super().__init__(p_change, beta)
-        self.c = c
-        self.shock_val = shock_val
-
-    @partial(jax.jit, static_argnums=(0,))
-    def imq_kernel(self, residual):
-        """
-        Inverse multi-quadratic kernel
-        """
-        return 1 / jnp.sqrt(1 + residual ** 2 / self.c ** 2)
-
-
-    @partial(jax.jit, static_argnums=(0,))
-    def update_bel_single(self, y, X, bel):
-        cov_previous = bel.cov
-        mean_previous = bel.mean
-
-        prec_previous = jnp.linalg.inv(cov_previous)
-
-        Wt = self.imq_kernel(y - X @ mean_previous)
-        prec_posterior = prec_previous + Wt ** 2 * self.beta * jnp.outer(X, X)
-        cov_posterior = jnp.linalg.inv(prec_posterior)
-        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + Wt ** 2 * self.beta * X * y)
-
-        bel = states.GaussState(mean=mean_posterior, cov=cov_posterior)
-        return bel
-
-
-    @partial(jax.jit, static_argnums=(0,))
-    def compute_log_posterior_predictive(self, y, X, bel):
-        """
-        Compute log-posterior predictive for a Gaussian with known variance
-        """
-        mean = bel.mean @ X
-        residual = y - mean
-        Wt = self.imq_kernel(residual)
-
-        scale = 1 / (self.beta * Wt ** 2) + X @ bel.cov @ X
-        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
-        return log_p_pred
-
-    @partial(jax.jit, static_argnums=(0,))
-    def update_bel_reset(self, t, ell, y, X, bel_hist):
-        shift = jnp.maximum(0, t - 1)
-        ix_prev = self.get_ix(t - 1, shift)
-        ix_update = self.get_ix(t, ell)
-
-        bel_previous_single = jax.tree_map(lambda hist: hist[ix_prev], bel_hist)
-        prev_mean = bel_previous_single.mean
-        prev_cov = bel_previous_single.cov / self.shock_val
-        bel_reset = states.GaussState(mean=prev_mean, cov=prev_cov)
-        bel_posterior = self.update_bel_single(y, X, bel_reset)
-
-        # update belief state
-        bel_hist = jax.tree_map(lambda hist, element: hist.at[ix_update].set(element), bel_hist, bel_posterior)
-        return bel_hist
-
-    def update_log_joint_reset(self, t, ell, y, X, bel_hist, log_joint_hist):
-        ix_prev = self.get_ix(t - 1, t - 1)
-        bel_prior = jax.tree_map(lambda x: x[ix_prev], bel_hist)
-        log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
-
-        if t == 0:
-            log_joint = log_p_pred + jnp.log(self.p_change)
-        else:
-            ix_start = self.get_ix(t-1, 0)
-            ix_end = self.get_ix(t-1, (t-1) + 1)
-            log_joint = log_p_pred + jax.nn.logsumexp(log_joint_hist[ix_start:ix_end] + jnp.log(self.p_change))
-
-        ix = self.get_ix(t, ell)
-        log_joint_hist = log_joint_hist.at[ix].set(log_joint.squeeze())
-        return log_joint_hist
-
-
 class LowMemoryBayesianOnlineChangepoint(ABC):
     def __init__(self, p_change, K):
         self.p_change = p_change
@@ -456,7 +331,7 @@ class AdaptiveBayesianOnlineChangepoint(LowMemoryBayesianOnlineChangepoint):
         """
         ix_max = jnp.nanargmax(bel.log_joint)
         bel_prior = jax.tree_map(lambda x: x[ix_max], bel)
-        new_cov = jax.lax.cond(self.shock > 0, lambda S: S / self.shock, lambda x: x, _.cov)
+        new_cov = jax.lax.cond(self.shock > 0, lambda S: S / self.shock, lambda S: _.cov, bel_prior.cov)
         bel_prior = bel_prior.replace(
             cov=new_cov,
             log_joint=_.log_joint, runlength=_.runlength
@@ -477,7 +352,6 @@ class BernoulliRegimeChange(ABC):
     """
     Bernoulli regime change based on the
     variational beam search (VBS) algorithm
-    TODO: split into base class and LM (linear model) class.
     """
     def __init__(self, p_change, K, shock):
         self.p_change = p_change
@@ -648,12 +522,10 @@ class KalmanFilterBetaAdaptiveDynamics(ABC):
         ...
 
     def predict_bel(self, eta, bel):
-        # gamma = jnp.exp(-eta / 2)
         gamma = jax.nn.sigmoid(eta)
         dim = bel.mean.shape[0]
 
         mean = bel.mean
-        # cov = bel.cov + gamma * jnp.eye(dim) * self.state_drift
         cov = gamma * bel.cov + (1 - gamma) * jnp.eye(dim) * self.state_drift
         bel = bel.replace(mean=mean, cov=cov)
         return bel
@@ -918,7 +790,6 @@ class LinearModelKFBA(KalmanFilterBetaAdaptiveDynamics):
         mean = bel.mean @ X
         cov = X.T @ bel.cov @ X + self.beta
         log_p_pred = distrax.Normal(mean, cov).log_prob(y)
-        # log_p_pred = log_p_pred + distrax.Gamma(2.0, 1.0).log_prob(jnp.exp(-eta/2))
         gamma = jax.nn.sigmoid(eta)
         log_p_pred = log_p_pred + distrax.Beta(self.a, self.b).log_prob(gamma)
         return log_p_pred
