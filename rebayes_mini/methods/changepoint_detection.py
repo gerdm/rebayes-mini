@@ -331,8 +331,11 @@ class AdaptiveBayesianOnlineChangepoint(LowMemoryBayesianOnlineChangepoint):
         """
         ix_max = jnp.nanargmax(bel.log_joint)
         bel_prior = jax.tree.map(lambda x: x[ix_max], bel)
-        new_cov = jax.lax.cond(self.shock > 0, lambda S: S / self.shock, lambda S: _.cov, bel_prior.cov)
+        dim = bel_prior.mean.shape[0]
+        new_cov = jax.lax.cond(self.shock > 0, lambda S: jnp.eye(dim) / self.shock, lambda S: _.cov, bel_prior.cov)
+        new_mean = bel_prior.mean / jnp.sqrt(jnp.linalg.norm(bel_prior.mean))
         bel_prior = bel_prior.replace(
+            mean=new_mean,
             cov=new_cov,
             log_joint=_.log_joint, runlength=_.runlength
         )
@@ -353,10 +356,11 @@ class BernoulliRegimeChange(ABC):
     Bernoulli regime change based on the
     variational beam search (VBS) algorithm
     """
-    def __init__(self, p_change, K, shock):
+    def __init__(self, p_change, K, shock, inflate_prior_covariance):
         self.p_change = p_change
         self.K = K
         self.shock = shock
+        self.inflate_prior_covariance = inflate_prior_covariance
 
 
     @abstractmethod
@@ -375,6 +379,31 @@ class BernoulliRegimeChange(ABC):
     @abstractmethod
     def update_bel():
         ...
+
+    def predict_cov_changepoint(self, bel):
+        cov_previous = bel.cov
+        dim = cov_previous.shape[0]
+        cov_if_changepoint = jax.lax.cond(
+            self.inflate_prior_covariance,
+            lambda: cov_previous / self.shock,
+            lambda: jnp.eye(dim) / self.shock,
+        )
+        return cov_if_changepoint
+
+
+    def predict_bel(self, bel, has_changepoint):
+        mean_previous = bel.mean
+        cov_previous = bel.cov
+        cov_changepoint = self.predict_cov_changepoint(bel)
+
+        cov_pred = jax.lax.cond(
+            has_changepoint,
+            lambda: cov_changepoint,
+            lambda: cov_previous,
+        )
+        
+        bel = bel.replace(cov=cov_pred)
+        return bel
 
 
     def split_and_update(self, y, X, bel):
@@ -671,8 +700,23 @@ class LinearModelABOCD(AdaptiveBayesianOnlineChangepoint):
 
 
 class LinearModelBRC(BernoulliRegimeChange):
-    def __init__(self, p_change, K, beta, shock):
-        super().__init__(p_change, K, shock)
+    def __init__(self, p_change, K, beta, shock, inflate_prior_covariance):
+        """
+        Bernoulli regime change with adaptive dynamics
+        Parameters
+        ----------
+        p_change : float
+            Probability of change
+        K : int
+            Number of belief states in buffer
+        beta : float
+            measurement variance
+        shock : float
+            shock parameter to the covariance matrix on a changepoint
+        inflate_prior_covariance : bool
+            inflate prior covariance on changepoint or default to identity times 1 / shock
+        """
+        super().__init__(p_change, K, shock, inflate_prior_covariance)
         self.beta = beta
 
 
@@ -701,11 +745,11 @@ class LinearModelBRC(BernoulliRegimeChange):
 
 
     def update_bel(self, y, X, bel, has_changepoint):
+        bel = self.predict_bel(bel, has_changepoint)
         cov_previous = bel.cov
         mean_previous = bel.mean
 
-        shock = self.shock ** has_changepoint
-        prec_previous = shock * jnp.linalg.inv(cov_previous)
+        prec_previous = jnp.linalg.inv(cov_previous)
 
         prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
         cov_posterior = jnp.linalg.inv(prec_posterior)
