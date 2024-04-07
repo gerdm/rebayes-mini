@@ -278,7 +278,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         vmap_update_bel = jax.vmap(self.update_bel, in_axes=(None, None, 0))
         bel = vmap_update_bel(y, X, bel)
         # Increment belief state by adding bel_prior and keeping top_indices
-        bel = jax.tree.map(lambda beliefs, prior: jnp.concatenate([prior[None], beliefs]), bel, bel_prior)
+        bel = jax.tree.map(lambda prior, beliefs: jnp.concatenate([prior[None], beliefs]), bel_prior, bel)
         bel = jax.tree.map(lambda param: jnp.take(param, top_indices, axis=0), bel)
         return bel
 
@@ -290,7 +290,8 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         runlengths = bel.runlength + 1
         runlengths = jnp.concatenate([jnp.array([0]), runlengths])
         runlengths = jnp.take(runlengths, top_indices, axis=0)
-        return runlengths
+        bel = bel.replace(runlength=runlengths)
+        return bel
 
 
     def step(self, y, X, bel, bel_prior, callback_fn):
@@ -300,8 +301,8 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
         bel_posterior = self.update_bel_indices(y, X, bel, bel_prior, top_indices)
 
-        runlengths = self.update_runlengths(bel_posterior, top_indices)
-        bel_posterior = bel_posterior.replace(log_joint=log_joint, runlength=runlengths)
+        bel_posterior = self.update_runlengths(bel_posterior, top_indices)
+        bel_posterior = bel_posterior.replace(log_joint=log_joint)
 
         out = callback_fn(bel_posterior, bel, y, X, top_indices)
 
@@ -318,7 +319,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
 
         bel, hist = jax.lax.scan(_step, bel, (y, X))
         return bel, hist
-    
+
 
 class AdaptiveBayesianOnlineChangepoint(LowMemoryBayesianOnlineChangepoint):
     def __init__(self, p_change, K, shock=0.0):
@@ -343,8 +344,8 @@ class AdaptiveBayesianOnlineChangepoint(LowMemoryBayesianOnlineChangepoint):
         log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
         bel_posterior = self.update_bel_indices(y, X, bel, bel_prior, top_indices)
 
-        runlengths = self.update_runlengths(bel_posterior, top_indices)
-        bel_posterior = bel_posterior.replace(log_joint=log_joint, runlength=runlengths)
+        bel_posterior = self.update_runlengths(bel_posterior, top_indices)
+        bel_posterior = bel_posterior.replace(log_joint=log_joint)
 
         out = callback_fn(bel_posterior, bel, y, X, top_indices)
 
