@@ -512,14 +512,12 @@ class BernoulliRegimeChange(ABC):
 
 
     def predict_bel(self, bel, has_changepoint):
-        mean_previous = bel.mean
-        cov_previous = bel.cov
         cov_changepoint = self.predict_cov_changepoint(bel)
 
         cov_pred = jax.lax.cond(
             has_changepoint,
             lambda: cov_changepoint,
-            lambda: cov_previous,
+            lambda: bel.cov,
         )
         
         bel = bel.replace(cov=cov_pred)
@@ -724,7 +722,7 @@ class LinearModelBOCD(LowMemoryBayesianOnlineChangepoint):
         d, *_ = mean.shape
         bel = states.BOCDGaussState(
             mean=jnp.zeros((self.K, d)),
-            cov=jnp.zeros((self.K, d, d)),
+            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
             log_joint=jnp.ones((self.K,)) * -jnp.inf,
             runlength=jnp.zeros(self.K)
         )
@@ -778,7 +776,7 @@ class LinearModelABOCD(AdaptiveBayesianOnlineChangepoint):
         d, *_ = mean.shape
         bel = states.BOCDGaussState(
             mean=jnp.zeros((self.K, d)),
-            cov=jnp.zeros((self.K, d, d)),
+            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
             log_joint=jnp.ones((self.K,)) * -jnp.inf,
             runlength=jnp.zeros(self.K)
         )
@@ -847,7 +845,7 @@ class LinearModelBRC(BernoulliRegimeChange):
         d, *_ = mean.shape
         bel = states.BernoullChangeGaussState(
             mean=jnp.zeros((self.K, d)),
-            cov=jnp.zeros((self.K, d, d)),
+            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
             log_weight=jnp.ones((self.K,)) * -jnp.inf,
             segment=jnp.zeros(self.K)
         )
@@ -982,7 +980,7 @@ class LinearModelBOCHD(BayesianOnlineChangepointHazardDetection):
         d, *_ = mean.shape
         bel = states.BOCHDGaussState(
             mean=jnp.zeros((self.K, d)),
-            cov=jnp.zeros((self.K, d, d)),
+            cov=jnp.repeat(cov, "i j -> k i j", k=self.K),
             log_joint=jnp.ones((self.K,)) * -jnp.inf,
             runlength=jnp.zeros(self.K),
             changepoints=jnp.zeros(self.K)
