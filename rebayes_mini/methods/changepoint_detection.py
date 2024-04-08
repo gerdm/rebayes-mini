@@ -325,7 +325,6 @@ class BayesianOnlineChangepointHazardDetection(ABC):
     def __init__(self, K, b):
         self.K = K
         self.b = b
-        raise NotImplementedError("Not implemented yet")
 
     @abstractmethod
     def init_bel(self, y, X, bel_init):
@@ -351,17 +350,17 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         proba = (alpha + 1) / (alpha + beta + 2)
         return proba
 
-    @partial(jax.vmap, in_axes=(None, None, None, 0))
+    @partial(jax.vmap, in_axes=(None, None, None, None, 0))
     def update_log_joint_increase(self, y, X, t, bel):
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel)
         log_joint = log_p_pred + bel.log_joint + jnp.log(1 - self.p_change(bel.changepoints, t))
         return log_joint
 
-    @partial(jax.vmap, in_axes=(None, None, None, 0, None))
+    @partial(jax.vmap, in_axes=(None, None, None, None, 0, None))
     def update_log_joint_reset(self, y, X, t, bel, bel_prior):
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
         log_joint = log_p_pred + jax.nn.logsumexp(bel.log_joint) + jnp.log(self.p_change(bel.changepoints, t))
-        return jnp.atleast_1d(log_joint)
+        return log_joint
 
     def update_runlengths(self, bel):
         """
@@ -375,7 +374,7 @@ class BayesianOnlineChangepointHazardDetection(ABC):
 
     def update_changepoints(self, bel):
         changepoints = bel.changepoints + 1 # increase changepoints by one
-        runlengths = jnp.zeros(self.K, dtype=jnp.int32) # reset runlengths
+        runlengths = bel.runlength * 0
         bel = bel.replace(changepoints=changepoints, runlength=runlengths)
         return bel
 
@@ -385,8 +384,8 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         # Expand log-joint
         log_joint = jnp.concatenate([log_joint_reset, log_joint_increase])
         log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
-        # reduce to K values --- index 0 is a changepoint
-        # log_joint, top_indices = jax.lax.top_k(log_joint, k=self.K)
+        # sekect top K values
+        log_joint, top_indices = jax.lax.top_k(log_joint, k=self.K)
         return log_joint, top_indices
 
     def update_bel_increase(self, y, X, bel, bel_prior):
@@ -400,8 +399,8 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         return bel_update
 
     def update_bel_batch(self, y, X, bel, bel_prior, is_changepoint):
-        vmap_update_bel_increase = jax.vmap(self.update_bel_increase, in_axes=(None, None, 0))
-        vmap_update_bel_reset = jax.vmap(self.update_bel_reset, in_axes=(None, None, 0))
+        vmap_update_bel_increase = jax.vmap(self.update_bel_increase, in_axes=(None, None, 0, None))
+        vmap_update_bel_reset = jax.vmap(self.update_bel_reset, in_axes=(None, None, 0, None))
 
         bel = jax.lax.cond(
             is_changepoint,
@@ -420,7 +419,7 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         # Update runlengths and changepoints
         bel_posterior_reset = self.update_bel_batch(y, X, bel, bel_prior, is_changepoint=True)
         bel_posterior_increase = self.update_bel_batch(y, X, bel, bel_prior, is_changepoint=False)
-        bel_posterior = jax.tree.map(lambda bchange, bupdate: jnp.concatenate([bchange, bupdate]), bel_changepoint, bel_posterior_increase)
+        bel_posterior = jax.tree.map(lambda bchange, bupdate: jnp.concatenate([bchange, bupdate]), bel_posterior_reset, bel_posterior_increase)
         bel_posterior = bel_posterior.replace(log_joint=log_joint)
 
         # from 2K to K belief states
@@ -970,3 +969,60 @@ class LinearModelKFBA(KalmanFilterBetaAdaptiveDynamics):
         cov = bel_pred.cov - Kt * X.T @ bel_pred.cov
         bel = bel.replace(mean=mean, cov=cov)
         return bel
+
+
+class LinearModelBOCHD(BayesianOnlineChangepointHazardDetection):
+    def __init__(self, K, b, beta):
+        super().__init__(K, b)
+        self.beta = beta
+
+
+    def init_bel(self, mean, cov, log_weight):
+        """
+        Initialize belief state
+        """
+        d, *_ = mean.shape
+        bel = states.BOCHDGaussState(
+            mean=jnp.zeros((self.K, d)),
+            cov=jnp.zeros((self.K, d, d)),
+            log_joint=jnp.ones((self.K,)) * -jnp.inf,
+            runlength=jnp.zeros(self.K),
+            changepoints=jnp.zeros(self.K)
+        )
+
+        bel_init = states.BOCHDGaussState(
+            mean=mean,
+            cov=cov,
+            log_joint=log_weight,
+            runlength=jnp.array(0),
+            changepoints=jnp.array(0)
+        )
+
+        bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
+
+        return bel
+
+
+    def compute_log_posterior_predictive(self, y, X, bel):
+        """
+        Compute log-posterior predictive for a Gaussian with known variance
+        """
+        mean = bel.mean @ X
+        scale = 1 / self.beta + X @  bel.cov @ X
+        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
+        return log_p_pred
+
+
+    def update_bel(self, y, X, bel):
+        cov_previous = bel.cov
+        mean_previous = bel.mean
+
+        prec_previous = jnp.linalg.inv(cov_previous)
+
+        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
+        cov_posterior = jnp.linalg.inv(prec_posterior)
+        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
+
+        bel = bel.replace(mean=mean_posterior, cov=cov_posterior)
+        return bel
+
