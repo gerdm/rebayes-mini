@@ -321,6 +321,116 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         return bel, hist
 
 
+class BayesianOnlineChangepointHazardDetection(ABC):
+    def __init__(self, K, b):
+        self.K = K
+        self.b = b
+
+    @abstractmethod
+    def init_bel(self, y, X, bel_init):
+        ...
+
+
+    @abstractmethod
+    def compute_log_posterior_predictive(self, y, X, bel):
+        ...
+
+
+    @abstractmethod
+    def update_bel(self, y, X, bel):
+        """
+        Update belief state (posterior)
+        """
+        ...
+
+    
+    def p_change(self, bel, t):
+        alpha = bel.changepoints
+        beta = t - alpha
+        proba = (alpha + 1) / (alpha + beta + 2)
+        return proba
+
+    @partial(jax.vmap, in_axes=(None, None, None, 0))
+    def update_log_joint_increase(self, y, X, t, bel):
+        log_p_pred = self.compute_log_posterior_predictive(y, X, bel)
+        log_joint = log_p_pred + bel.log_joint + jnp.log(1 - self.p_change(bel, t))
+        return log_joint
+
+    @partial(jax.vmap, in_axes=(None, None, None, 0, None))
+    def update_log_joint_reset(self, y, X, bel, bel_prior):
+        log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
+        log_joint = log_p_pred + jax.nn.logsumexp(bel.log_joint) + jnp.log(self.p_change(bel, t))
+        return jnp.atleast_1d(log_joint)
+
+    def update_runlengths(self, bel):
+        """
+        Update runlengths and number of changepoints
+        """
+        runlengths = bel.runlength + 1 # increase runlength by one
+        changepoints = bel.changepoints # no change in changepoints
+
+        bel = bel.replace(changepoints=changepoints, runlength=runlengths)
+        return bel
+
+    def update_change_points(self, bel):
+        changepoints = bel.changepoints + 1 # increase changepoints by one
+        runlengths = jnp.zeros(self.K, dtype=jnp.int32) # reset runlengths
+        bel = bel.replace(changepoints=changepoints, runlength=runlengths)
+        return bel
+
+    def update_log_joint(self, y, X, bel, bel_prior):
+        log_joint_reset = self.update_log_joint_reset(y, X, bel, bel_prior)
+        log_joint_increase = self.update_log_joint_increase(y, X, bel)
+        # Expand log-joint
+        log_joint = jnp.concatenate([log_joint_reset, log_joint_increase])
+        log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
+        # reduce to K values --- index 0 is a changepoint
+        # log_joint, top_indices = jax.lax.top_k(log_joint, k=self.K)
+        return log_joint, top_indices
+
+    def update_bel_increase(self, y, X, bel, bel_prior):
+        bel_update = self.update_bel(y, X, bel)
+        bel_update = self.update_runlengths(bel_update)
+        return bel_update
+    
+    def update_bel_reset(self, y, X, bel, bel_prior):
+        bel_update = bel_prior
+        bel_update = self.update_change_points(bel_update)
+        return bel_update
+
+    def update_bel_batch(self, y, X, bel, bel_prior, is_changepoint):
+        vmap_update_bel_increase = jax.vmap(self.update_bel_increase, in_axes=(None, None, 0))
+        vmap_update_bel_reset = jax.vmap(self.update_bel_reset, in_axes=(None, None, 0))
+
+        bel = jax.lax.cond(
+            is_changepoint,
+            lambda: vmap_update_bel_reset(y, X, bel, bel_prior),
+            lambda: vmap_update_bel_increase(y, X, bel, bel_prior),
+        )
+        return bel
+
+    def step(self, y, X, t, bel, bel_prior, callback_fn):
+        """
+        Update belief state and log-joint for a single observation
+        """
+        # From K to 2K belief states
+        log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
+
+        # Update runlengths and changepoints
+        bel_posterior_reset = self.update_bel_batch(y, X, bel, bel_prior, is_changepoint=True)
+        bel_posterior_increase = self.update_bel_batch(y, X, bel, bel_prior, is_changepoint=False)
+        bel_posterior = jax.tree.map(lambda bchange, bupdate: jnp.concatenate([bchange, bupdate]), bel_changepoint, bel_posterior_increase)
+        bel_posterior = bel_posterior.replace(log_joint=log_joint)
+
+        # from 2K to K belief states
+        bel_posterior = jax.tree.map(lambda param: jnp.take(param, top_indices, axis=0), bel_posterior)
+
+        # callback and finish update
+        out = callback_fn(bel_posterior, bel, y, X, top_indices)
+        return bel_posterior, out
+
+
+
 class AdaptiveBayesianOnlineChangepoint(LowMemoryBayesianOnlineChangepoint):
     def __init__(self, p_change, K, shock=0.0):
         super().__init__(p_change, K)
