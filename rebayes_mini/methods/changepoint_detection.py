@@ -325,6 +325,7 @@ class BayesianOnlineChangepointHazardDetection(ABC):
     def __init__(self, K, b):
         self.K = K
         self.b = b
+        raise NotImplementedError("Not implemented yet")
 
     @abstractmethod
     def init_bel(self, y, X, bel_init):
@@ -344,8 +345,8 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         ...
 
     
-    def p_change(self, bel, t):
-        alpha = bel.changepoints
+    def p_change(self, changepoints, t):
+        alpha = changepoints
         beta = t - alpha
         proba = (alpha + 1) / (alpha + beta + 2)
         return proba
@@ -353,13 +354,13 @@ class BayesianOnlineChangepointHazardDetection(ABC):
     @partial(jax.vmap, in_axes=(None, None, None, 0))
     def update_log_joint_increase(self, y, X, t, bel):
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel)
-        log_joint = log_p_pred + bel.log_joint + jnp.log(1 - self.p_change(bel, t))
+        log_joint = log_p_pred + bel.log_joint + jnp.log(1 - self.p_change(bel.changepoints, t))
         return log_joint
 
     @partial(jax.vmap, in_axes=(None, None, None, 0, None))
-    def update_log_joint_reset(self, y, X, bel, bel_prior):
+    def update_log_joint_reset(self, y, X, t, bel, bel_prior):
         log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
-        log_joint = log_p_pred + jax.nn.logsumexp(bel.log_joint) + jnp.log(self.p_change(bel, t))
+        log_joint = log_p_pred + jax.nn.logsumexp(bel.log_joint) + jnp.log(self.p_change(bel.changepoints, t))
         return jnp.atleast_1d(log_joint)
 
     def update_runlengths(self, bel):
@@ -372,15 +373,15 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         bel = bel.replace(changepoints=changepoints, runlength=runlengths)
         return bel
 
-    def update_change_points(self, bel):
+    def update_changepoints(self, bel):
         changepoints = bel.changepoints + 1 # increase changepoints by one
         runlengths = jnp.zeros(self.K, dtype=jnp.int32) # reset runlengths
         bel = bel.replace(changepoints=changepoints, runlength=runlengths)
         return bel
 
-    def update_log_joint(self, y, X, bel, bel_prior):
-        log_joint_reset = self.update_log_joint_reset(y, X, bel, bel_prior)
-        log_joint_increase = self.update_log_joint_increase(y, X, bel)
+    def update_log_joint(self, y, X, t, bel, bel_prior):
+        log_joint_reset = self.update_log_joint_reset(y, X, t, bel, bel_prior)
+        log_joint_increase = self.update_log_joint_increase(y, X, t, bel)
         # Expand log-joint
         log_joint = jnp.concatenate([log_joint_reset, log_joint_increase])
         log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
@@ -395,7 +396,7 @@ class BayesianOnlineChangepointHazardDetection(ABC):
     
     def update_bel_reset(self, y, X, bel, bel_prior):
         bel_update = bel_prior
-        bel_update = self.update_change_points(bel_update)
+        bel_update = self.update_changepoints(bel_update)
         return bel_update
 
     def update_bel_batch(self, y, X, bel, bel_prior, is_changepoint):
@@ -414,7 +415,7 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         Update belief state and log-joint for a single observation
         """
         # From K to 2K belief states
-        log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
+        log_joint, top_indices = self.update_log_joint(y, X, t, bel, bel_prior)
 
         # Update runlengths and changepoints
         bel_posterior_reset = self.update_bel_batch(y, X, bel, bel_prior, is_changepoint=True)
@@ -426,9 +427,20 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         bel_posterior = jax.tree.map(lambda param: jnp.take(param, top_indices, axis=0), bel_posterior)
 
         # callback and finish update
-        out = callback_fn(bel_posterior, bel, y, X, top_indices)
+        out = callback_fn(bel_posterior, bel, y, X, top_indices, t)
         return bel_posterior, out
 
+    def scan(self, y, X, bel, callback_fn=None):
+        timesteps = jnp.arange(y.shape[0])
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        bel_prior = jax.tree.map(lambda x: x[0], bel)
+        def _step(bel, yXt):
+            y, X, t = yXt
+            bel, out = self.step(y, X, t, bel, bel_prior, callback_fn)
+            return bel, out
+
+        bel, hist = jax.lax.scan(_step, bel, (y, X, timesteps))
+        return bel, hist
 
 
 class AdaptiveBayesianOnlineChangepoint(LowMemoryBayesianOnlineChangepoint):

@@ -15,6 +15,18 @@ class BOCDGaussState:
 
 
 @chex.dataclass
+class BOCHDGaussState:
+    """
+    Bayesian Online Changepoint Detection with unknown hazard rate
+    """
+    mean: chex.Array
+    cov: chex.Array
+    log_joint: chex.Array
+    runlength: chex.Array
+    changepoints: chex.Array
+
+
+@chex.dataclass
 class BernoullChangeGaussState:
     mean: chex.Array
     cov: chex.Array
