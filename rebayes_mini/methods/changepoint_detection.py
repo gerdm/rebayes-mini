@@ -419,6 +419,9 @@ class BayesianOnlineChangepointHazardDetection(ABC):
 
         # from 2K to K belief states
         bel_posterior = jax.tree.map(lambda param: jnp.take(param, top_indices, axis=0), bel_posterior)
+        # re-normalise log-joint
+        log_joint_norm = bel_posterior.log_joint - jax.nn.logsumexp(bel_posterior.log_joint)
+        bel_posterior = bel_posterior.replace(log_joint=log_joint_norm)
 
         # callback and finish update
         out = callback_fn(bel_posterior, bel, y, X, top_indices, t)
