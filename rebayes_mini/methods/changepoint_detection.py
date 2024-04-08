@@ -260,8 +260,8 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
 
 
     def update_log_joint(self, y, X, bel, bel_prior):
-        log_joint_increase = self.update_log_joint_increase(y, X, bel)
         log_joint_reset = self.update_log_joint_reset(y, X, bel, bel_prior)
+        log_joint_increase = self.update_log_joint_increase(y, X, bel)
         # Expand log-joint
         log_joint = jnp.concatenate([log_joint_reset, log_joint_increase])
         log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
@@ -274,7 +274,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         """
         Update belief state (posterior) for the chosen indices
         """
-        # Update all belief states
+        # Update all belief states when a changepoint did not happen
         vmap_update_bel = jax.vmap(self.update_bel, in_axes=(None, None, 0))
         bel = vmap_update_bel(y, X, bel)
         # Increment belief state by adding bel_prior and keeping top_indices
