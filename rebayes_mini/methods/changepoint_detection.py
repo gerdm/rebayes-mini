@@ -535,7 +535,6 @@ class BernoulliRegimeChange(ABC):
         return bel, hist
 
 
-
 class KalmanFilterAdaptiveDynamics(ABC):
     def __init__(self, n_inner, ebayes_lr, state_drift, deflate_mean=True):
         self.n_inner = n_inner
@@ -844,7 +843,6 @@ class LinearModelBRC(BernoulliRegimeChange):
         return log_p_pred
 
 
-
 class LinearModelKFA(KalmanFilterAdaptiveDynamics):
     def __init__(self, n_inner, ebayes_lr, beta, state_drift, deflate_mean=True):
         super().__init__(n_inner, ebayes_lr, state_drift, deflate_mean)
@@ -932,7 +930,7 @@ class LinearModelBOCHD(BayesianOnlineChangepointHazardDetection):
         d, *_ = mean.shape
         bel = states.BOCHDGaussState(
             mean=jnp.zeros((self.K, d)),
-            cov=jnp.repeat(cov, "i j -> k i j", k=self.K),
+            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
             log_joint=jnp.ones((self.K,)) * -jnp.inf,
             runlength=jnp.zeros(self.K),
             changepoints=jnp.zeros(self.K)
