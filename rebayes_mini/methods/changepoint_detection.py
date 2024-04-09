@@ -9,7 +9,7 @@ from rebayes_mini import states
 from rebayes_mini import callbacks
 
 
-class BayesianOnlineChangepointDetection(ABC):
+class FullMemoryBayesianOnlineChangepointDetection(ABC):
     def __init__(self, p_change):
         self.p_change = p_change
 
@@ -172,54 +172,6 @@ class BayesianOnlineChangepointDetection(ABC):
         }
 
         return out
-
-
-class LM_BOCD(BayesianOnlineChangepointDetection):
-    """
-    LM-BOCD: Bayesian Online Changepoint Detection for linear model
-    with known measurement variance
-    For a run with T data points and paramter dimension D,
-    the algorithm has memory requirement of O(T * (T + 1) / 2 * D ^ 2)
-    """
-    def __init__(self, p_change, beta):
-        super().__init__(p_change)
-        self.beta = beta
-
-
-    def init_bel(self, y_hist, X_hist, bel_init, size_filter):
-        _, d = X_hist.shape
-        hist_mean = jnp.zeros((size_filter, d))
-        hist_cov = jnp.zeros((size_filter, d, d))
-
-        bel_hist = states.GaussState(mean=hist_mean, cov=hist_cov)
-        bel_hist = jax.tree.map(lambda hist, init: hist.at[0].set(init), bel_hist, bel_init)
-        return bel_hist
-
-
-    @partial(jax.jit, static_argnums=(0,))
-    def update_bel_single(self, y, X, bel_prev):
-        cov_previous = bel_prev.cov
-        mean_previous = bel_prev.mean
-
-        prec_previous = jnp.linalg.inv(cov_previous)
-
-        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
-        cov_posterior = jnp.linalg.inv(prec_posterior)
-        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
-
-        bel = states.GaussState(mean=mean_posterior, cov=cov_posterior)
-        return bel
-
-
-    @partial(jax.jit, static_argnums=(0,))
-    def compute_log_posterior_predictive(self, y, X, bel):
-        """
-        Compute log-posterior predictive for a Gaussian with known variance
-        """
-        mean = bel.mean @ X
-        scale = 1 / self.beta + X @  bel.cov @ X
-        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
-        return log_p_pred
 
 
 class LowMemoryBayesianOnlineChangepoint(ABC):
@@ -1021,4 +973,52 @@ class LinearModelBOCHD(BayesianOnlineChangepointHazardDetection):
 
         bel = bel.replace(mean=mean_posterior, cov=cov_posterior)
         return bel
+
+
+class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
+    """
+    Full-memory Bayesian Online Changepoint Detection for linear model
+    with known measurement variance
+    For a run with T data points and paramter dimension D,
+    the algorithm has memory requirement of O(T * (T + 1) / 2 * D ^ 2)
+    """
+    def __init__(self, p_change, beta):
+        super().__init__(p_change)
+        self.beta = beta
+
+
+    def init_bel(self, y_hist, X_hist, bel_init, size_filter):
+        _, d = X_hist.shape
+        hist_mean = jnp.zeros((size_filter, d))
+        hist_cov = jnp.zeros((size_filter, d, d))
+
+        bel_hist = states.GaussState(mean=hist_mean, cov=hist_cov)
+        bel_hist = jax.tree.map(lambda hist, init: hist.at[0].set(init), bel_hist, bel_init)
+        return bel_hist
+
+
+    @partial(jax.jit, static_argnums=(0,))
+    def update_bel_single(self, y, X, bel_prev):
+        cov_previous = bel_prev.cov
+        mean_previous = bel_prev.mean
+
+        prec_previous = jnp.linalg.inv(cov_previous)
+
+        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
+        cov_posterior = jnp.linalg.inv(prec_posterior)
+        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
+
+        bel = states.GaussState(mean=mean_posterior, cov=cov_posterior)
+        return bel
+
+
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_log_posterior_predictive(self, y, X, bel):
+        """
+        Compute log-posterior predictive for a Gaussian with known variance
+        """
+        mean = bel.mean @ X
+        scale = 1 / self.beta + X @  bel.cov @ X
+        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
+        return log_p_pred
 
