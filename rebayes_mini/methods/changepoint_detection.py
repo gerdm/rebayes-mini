@@ -1,4 +1,5 @@
 import jax
+import optax
 import einops
 import distrax
 import jax.numpy as jnp
@@ -602,6 +603,7 @@ class KalmanFilterBetaAdaptiveDynamics(ABC):
         self.n_inner = n_inner
         self.ebayes_lr = ebayes_lr # empirical bayes learning rate
         self.state_drift = state_drift
+        self.optimizer = optax.adam(-ebayes_lr)
 
     @abstractmethod
     def init_bel(self):
@@ -632,14 +634,18 @@ class KalmanFilterBetaAdaptiveDynamics(ABC):
     def step(self, y, X, bel):
         grad_log_predict_density = jax.grad(self.log_posterior_predictive, argnums=0)
 
-        def _inner_pred(i, bel):
+        opt_state = self.optimizer.init(bel.eta)
+        def _inner_pred(i, state):
+            bel, opt = state
             eta = bel.eta
             grad = grad_log_predict_density(eta, y, X, bel)
-            eta = eta + self.ebayes_lr * grad
+            updates, opt = self.optimizer.update(grad, opt, eta)
+            # eta = eta + self.ebayes_lr * grad
+            eta = optax.apply_updates(eta, updates)
             bel = bel.replace(eta=eta)
-            return bel
+            return bel, opt
 
-        bel = jax.lax.fori_loop(0, self.n_inner, _inner_pred, bel)
+        bel, _ = jax.lax.fori_loop(0, self.n_inner, _inner_pred, (bel, opt_state))
         bel = self.update_bel(y, X, bel)
         return bel
 
