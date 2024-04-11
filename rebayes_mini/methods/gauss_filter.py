@@ -120,7 +120,7 @@ class ExtendedKalmanFilter:
         return bel
 
     def _update_step(self, bel, y, x):
-        Ht = self.jac_obs(bel.mean, x)       
+        Ht = self.jac_obs(bel.mean, x)
         Rt = self.observation_covariance
 
         St = Ht @ bel.cov @ Ht.T + Rt
@@ -186,7 +186,7 @@ class ExpfamFilter:
     @partial(jax.jit, static_argnums=(0,))
     def covariance(self, eta):
         return jax.hessian(self.log_partition)(eta).squeeze()
-    
+
     def _predict_step(self, bel):
         # TODO: add dynamics' function
         nparams = len(bel.mean)
@@ -273,6 +273,14 @@ class MultinomialFilter(ExpfamFilter):
     @partial(jax.jit, static_argnums=(0,))
     def _suff_stat(self, y):
         return y
+
+
+    def mean(self, eta):
+        return jax.nn.softmax(eta)
+
+    def covariance(self, eta):
+        mean = self.mean(eta)
+        return jnp.diag(mean) - jnp.outer(mean, mean) + jnp.eye(len(eta))  * 1.0
 
 
 class HeteroskedasticGaussianFilter(ExpfamFilter):
