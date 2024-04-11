@@ -4,14 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rebayes_mini"
-version = "0.0.1"
+version = "0.1.0"
 description = "Minimalistic implementation of recursive Bayesian estimation methods"
 readme = "README.md"
 authors = [
     {name = "Gerardo Duran-Martin", email = "g.duran@me.com"},
-    {name = "Peter Chang", email = "peter0414@gmail.com"},
-    {name = "Kevin P. Murphy"},
-    {name = "Matt Jones"},
 ]
 requires-python = ">=3.9"
 
@@ -21,4 +18,6 @@ dependencies = [
     "tfp-nightly[jax]",
     "chex",
     "einops",
+    "optax",
+    "distrax",
 ]
