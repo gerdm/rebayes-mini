@@ -1,16 +1,10 @@
 import jax
-import chex
 import distrax
 import jax.numpy as jnp
-from jax.flatten_util import ravel_pytree
-from rebayes_mini import callbacks
 from functools import partial
-
-@chex.dataclass
-class KFState:
-    """State of the Kalman Filter"""
-    mean: chex.Array
-    cov: chex.Array
+from rebayes_mini import callbacks
+from rebayes_mini.states import GaussState
+from jax.flatten_util import ravel_pytree
 
 
 class KalmanFilter:
@@ -22,7 +16,7 @@ class KalmanFilter:
         self.observation_covariance = observation_covariance
 
     def init_bel(self, mean, cov=1.0):
-        return KFState(
+        return GaussState(
             mean=mean,
             cov=jnp.eye(len(mean)) * cov,
         )
@@ -108,7 +102,7 @@ class ExtendedKalmanFilter:
     def init_bel(self, mean, cov=1.0):
         mean, cov, dim_latent = self._init_components(mean, cov)
 
-        return KFState(
+        return GaussState(
             mean=mean,
             cov=cov,
         )
@@ -166,7 +160,7 @@ class ExpfamFilter:
         self.grad_link_fn = jax.jacrev(self.link_fn)
 
         nparams = len(init_params)
-        return KFState(
+        return GaussState(
             mean=init_params,
             cov=jnp.eye(nparams) * cov,
         )
@@ -316,4 +310,3 @@ class HeteroskedasticGaussianFilter(ExpfamFilter):
     @partial(jax.jit, static_argnums=(0,))
     def _suff_stat(self, y):
         return jnp.array([y, y ** 2])
-
