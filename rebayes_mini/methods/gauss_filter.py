@@ -1,5 +1,6 @@
 import jax
 import chex
+import distrax
 import jax.numpy as jnp
 from jax.flatten_util import ravel_pytree
 from rebayes_mini import callbacks
@@ -186,6 +187,23 @@ class ExpfamFilter:
     @partial(jax.jit, static_argnums=(0,))
     def covariance(self, eta):
         return jax.hessian(self.log_partition)(eta).squeeze()
+
+
+    @partial(jax.jit, static_argnums=(0,))
+    def log_predictive_density(self, y, X, bel):
+        """
+        compute the log-posterior predictive density
+        of the moment-matched Gaussian
+        """
+        eta = self.link_fn(bel.mean, X).astype(float)
+        mean = self.mean(eta)
+        Rt = jnp.atleast_2d(self.covariance(eta))
+        Ht = Rt @ self.grad_link_fn(bel.mean, X)
+        covariance = Ht @ bel.cov @ Ht.T + Rt
+
+        log_p_pred = distrax.MultivariateNormalFullCovariance(mean, covariance).log_prob(y)
+        return log_p_pred
+
 
     def _predict_step(self, bel):
         # TODO: add dynamics' function

@@ -26,7 +26,7 @@ class FullMemoryBayesianOnlineChangepointDetection(ABC):
 
 
     @abstractmethod
-    def compute_log_posterior_predictive(self, y, X, bel):
+    def log_predictive_density(self, y, X, bel):
         """
         Compute log-posterior predictive for a Gaussian with known variance
         """
@@ -44,7 +44,7 @@ class FullMemoryBayesianOnlineChangepointDetection(ABC):
 
     def update_log_joint_reset(self, t, ell, y, X, bel_hist, log_joint_hist):
         bel_prior = jax.tree.map(lambda x: x[0], bel_hist)
-        log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
+        log_p_pred = self.log_predictive_density(y, X, bel_prior)
 
         if t == 0:
             log_joint = log_p_pred + jnp.log(self.p_change)
@@ -64,7 +64,7 @@ class FullMemoryBayesianOnlineChangepointDetection(ABC):
         ix_prev = self.get_ix(t-1, ell-1)
 
         bel_posterior = jax.tree.map(lambda hist: hist[ix_prev], bel_hist)
-        log_p_pred = self.compute_log_posterior_predictive(y, X, bel_posterior)
+        log_p_pred = self.log_predictive_density(y, X, bel_posterior)
 
         log_joint = log_p_pred + log_joint_hist[ix_prev] + jnp.log(1 - self.p_change)
         log_joint = log_joint.squeeze()
@@ -188,7 +188,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
 
 
     @abstractmethod
-    def compute_log_posterior_predictive(self, y, X, bel):
+    def log_predictive_density(self, y, X, bel):
         ...
 
 
@@ -202,13 +202,13 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
 
     @partial(jax.vmap, in_axes=(None, None, None, 0))
     def update_log_joint_increase(self, y, X, bel):
-        log_p_pred = self.compute_log_posterior_predictive(y, X, bel)
+        log_p_pred = self.log_predictive_density(y, X, bel)
         log_joint = log_p_pred + bel.log_joint + jnp.log(1 - self.p_change)
         return log_joint
 
 
     def update_log_joint_reset(self, y, X, bel, bel_prior):
-        log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
+        log_p_pred = self.log_predictive_density(y, X, bel_prior)
         log_joint = log_p_pred + jax.nn.logsumexp(bel.log_joint) + jnp.log(self.p_change)
         return jnp.atleast_1d(log_joint)
 
@@ -286,7 +286,7 @@ class BayesianOnlineChangepointHazardDetection(ABC):
 
 
     @abstractmethod
-    def compute_log_posterior_predictive(self, y, X, bel):
+    def log_predictive_density(self, y, X, bel):
         ...
 
 
@@ -306,13 +306,13 @@ class BayesianOnlineChangepointHazardDetection(ABC):
 
     @partial(jax.vmap, in_axes=(None, None, None, None, 0))
     def update_log_joint_increase(self, y, X, t, bel):
-        log_p_pred = self.compute_log_posterior_predictive(y, X, bel)
+        log_p_pred = self.log_predictive_density(y, X, bel)
         log_joint = log_p_pred + bel.log_joint + jnp.log(1 - self.p_change(bel.changepoints, t))
         return log_joint
 
     @partial(jax.vmap, in_axes=(None, None, None, None, 0, None))
     def update_log_joint_reset(self, y, X, t, bel, bel_prior):
-        log_p_pred = self.compute_log_posterior_predictive(y, X, bel_prior)
+        log_p_pred = self.log_predictive_density(y, X, bel_prior)
         log_joint = log_p_pred + jax.nn.logsumexp(bel.log_joint) + jnp.log(self.p_change(bel.changepoints, t))
         return log_joint
 
@@ -446,7 +446,7 @@ class BernoulliRegimeChange(ABC):
 
 
     @abstractmethod
-    def compute_log_posterior_predictive(self, y, X, bel):
+    def log_predictive_density(self, y, X, bel):
         ...
 
 
@@ -485,8 +485,8 @@ class BernoulliRegimeChange(ABC):
         bel_up = self.update_bel(y, X, bel, has_changepoint=1.0)
         bel_down = self.update_bel(y, X, bel, has_changepoint=0.0)
 
-        log_pp_up = self.compute_log_posterior_predictive(y, X, bel_up)
-        log_pp_down = self.compute_log_posterior_predictive(y, X, bel_down)
+        log_pp_up = self.log_predictive_density(y, X, bel_up)
+        log_pp_down = self.log_predictive_density(y, X, bel_down)
 
         log_odds = log_pp_up - log_pp_down
         log_odds = log_odds + jnp.log(self.p_change / (1 - self.p_change))
@@ -698,7 +698,7 @@ class LinearModelBOCD(LowMemoryBayesianOnlineChangepoint):
         return bel
 
     @partial(jax.jit, static_argnums=(0,))
-    def compute_log_posterior_predictive(self, y, X, bel):
+    def log_predictive_density(self, y, X, bel):
         """
         Compute log-posterior predictive for a Gaussian with known variance
         """
@@ -752,7 +752,7 @@ class LinearModelABOCD(AdaptiveBayesianOnlineChangepoint):
         return bel
 
     @partial(jax.jit, static_argnums=(0,))
-    def compute_log_posterior_predictive(self, y, X, bel):
+    def log_predictive_density(self, y, X, bel):
         """
         Compute log-posterior predictive for a Gaussian with known variance
         """
@@ -841,7 +841,7 @@ class LinearModelBRC(BernoulliRegimeChange):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def compute_log_posterior_predictive(self, y, X, bel):
+    def log_predictive_density(self, y, X, bel):
         """
         Compute log-posterior predictive for a Gaussian with known variance
         """
@@ -957,7 +957,7 @@ class LinearModelBOCHD(BayesianOnlineChangepointHazardDetection):
         return bel
 
 
-    def compute_log_posterior_predictive(self, y, X, bel):
+    def log_predictive_density(self, y, X, bel):
         """
         Compute log-posterior predictive for a Gaussian with known variance
         """
@@ -1019,7 +1019,7 @@ class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def compute_log_posterior_predictive(self, y, X, bel):
+    def log_predictive_density(self, y, X, bel):
         """
         Compute log-posterior predictive for a Gaussian with known variance
         """
@@ -1030,19 +1030,18 @@ class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
 
 
 
-class KFBOCD(AdaptiveBayesianOnlineChangepoint):
+class ExpfamFBOCD(AdaptiveBayesianOnlineChangepoint):
     """
     Low-memory Kalman-filter BOCD
     """
     def __init__(
-        self, fn_obs, dynamics_covariance,
-        p_change, K, beta
+        self, p_change, K, filter
     ):
         super().__init__(p_change, K)
-        self.filter = MultinomialFilter(
-            fn_obs, dynamics_covariance,
-        )
-        self.beta = beta
+        self.filter = filter
+    
+    def log_predictive_density(self, y, X, bel):
+        return self.filter.log_predictive_density(y, X, bel)
 
 
     def init_bel(self, mean, cov, log_joint_init):
@@ -1072,23 +1071,7 @@ class KFBOCD(AdaptiveBayesianOnlineChangepoint):
 
         return bel
 
-    @partial(jax.jit, static_argnums=(0,))
-    def compute_log_posterior_predictive(self, y, X, bel):
-        """
-        Compute log-posterior predictive for a Gaussian with known variance
-        """
-        eta = self.filter.link_fn(bel.mean, X).astype(float)
-        mean = self.filter.mean(eta)
-        Rt = jnp.atleast_2d(self.filter.covariance(eta))
-        Ht = Rt @ self.filter.grad_link_fn(bel.mean, X)
-        covariance = Ht @ bel.cov @ Ht.T + Rt
-
-        log_p_pred = distrax.MultivariateNormalFullCovariance(mean, covariance).log_prob(y)
-        return log_p_pred
-
-
     def update_bel(self, y, X, bel):
         bel_pred = self.filter._predict_step(bel)
         bel = self.filter._update_step(bel_pred, y, X)
         return bel
-    
