@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from functools import partial
 from rebayes_mini import states
 from rebayes_mini import callbacks
+from rebayes_mini.methods.gauss_filter import MultinomialFilter
 
 
 class FullMemoryBayesianOnlineChangepointDetection(ABC):
@@ -638,6 +639,7 @@ class KalmanFilterBetaAdaptiveDynamics(ABC):
         def _inner_pred(i, state):
             bel, opt = state
             eta = bel.eta
+            bel = self.predict_bel(eta, bel)
             grad = grad_log_predict_density(eta, y, X, bel)
             updates, opt = self.optimizer.update(grad, opt, eta)
             # eta = eta + self.ebayes_lr * grad
@@ -1026,3 +1028,67 @@ class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
         log_p_pred = distrax.Normal(mean, scale).log_prob(y)
         return log_p_pred
 
+
+
+class KFBOCD(AdaptiveBayesianOnlineChangepoint):
+    """
+    Low-memory Kalman-filter BOCD
+    """
+    def __init__(
+        self, fn_obs, dynamics_covariance,
+        p_change, K, beta
+    ):
+        super().__init__(p_change, K)
+        self.filter = MultinomialFilter(
+            fn_obs, dynamics_covariance,
+        )
+        self.beta = beta
+
+
+    def init_bel(self, mean, cov, log_joint_init):
+        """
+        Initialize belief state
+        """
+        kfstate = self.filter.init_bel(mean)       
+        mean = kfstate.mean
+        cov = kfstate.cov
+
+        d, *_ = mean.shape
+        bel = states.BOCDGaussState(
+            mean=einops.repeat(mean, "i -> k i", k=self.K),
+            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
+            log_joint=jnp.ones((self.K,)) * -jnp.inf,
+            runlength=jnp.zeros(self.K)
+        )
+
+        bel_init = states.BOCDGaussState(
+            mean=mean,
+            cov=cov,
+            log_joint=log_joint_init,
+            runlength=jnp.array(0)
+        )
+
+        bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
+
+        return bel
+
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_log_posterior_predictive(self, y, X, bel):
+        """
+        Compute log-posterior predictive for a Gaussian with known variance
+        """
+        eta = self.filter.link_fn(bel.mean, X).astype(float)
+        mean = self.filter.mean(eta)
+        Rt = jnp.atleast_2d(self.filter.covariance(eta))
+        Ht = Rt @ self.filter.grad_link_fn(bel.mean, X)
+        covariance = Ht @ bel.cov @ Ht.T + Rt
+
+        log_p_pred = distrax.MultivariateNormalFullCovariance(mean, covariance).log_prob(y)
+        return log_p_pred
+
+
+    def update_bel(self, y, X, bel):
+        bel_pred = self.filter._predict_step(bel)
+        bel = self.filter._update_step(bel_pred, y, X)
+        return bel
+    
