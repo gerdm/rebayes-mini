@@ -1048,9 +1048,9 @@ class ExpfamFBOCD(AdaptiveBayesianOnlineChangepoint):
         """
         Initialize belief state
         """
-        kfstate = self.filter.init_bel(mean)       
-        mean = kfstate.mean
-        cov = kfstate.cov
+        state_filter = self.filter.init_bel(mean)       
+        mean = state_filter.mean
+        cov = state_filter.cov
 
         d, *_ = mean.shape
         bel = states.BOCDGaussState(
