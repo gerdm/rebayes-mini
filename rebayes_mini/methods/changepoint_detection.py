@@ -176,7 +176,7 @@ class FullMemoryBayesianOnlineChangepointDetection(ABC):
         return out
 
 
-class LowMemoryBayesianOnlineChangepoint(ABC):
+class BayesianOnlineChangepoint(ABC):
     def __init__(self, p_change, K):
         self.p_change = p_change
         self.K = K
@@ -232,7 +232,7 @@ class LowMemoryBayesianOnlineChangepoint(ABC):
         vmap_update_bel = jax.vmap(self.update_bel, in_axes=(None, None, 0))
         bel = vmap_update_bel(y, X, bel)
         # Increment belief state by adding bel_prior and keeping top_indices
-        bel = jax.tree.map(lambda prior, beliefs: jnp.concatenate([prior[None], beliefs]), bel_prior, bel)
+        bel = jax.tree.map(lambda prior, updates: jnp.concatenate([prior[None], updates]), bel_prior, bel)
         bel = jax.tree.map(lambda param: jnp.take(param, top_indices, axis=0), bel)
         return bel
 
@@ -394,7 +394,7 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         return bel, hist
 
 
-class AdaptiveBayesianOnlineChangepoint(LowMemoryBayesianOnlineChangepoint):
+class AdaptiveBayesianOnlineChangepoint(BayesianOnlineChangepoint):
     def __init__(self, p_change, K, shock=0.0):
         super().__init__(p_change, K)
         self.shock = shock
@@ -665,7 +665,7 @@ class KalmanFilterBetaAdaptiveDynamics(ABC):
         return bel, hist
 
 
-class LinearModelBOCD(LowMemoryBayesianOnlineChangepoint):
+class LinearModelBOCD(BayesianOnlineChangepoint):
     """
     Low-memory LM-BOCD
     """
@@ -1048,7 +1048,7 @@ class ExpfamFBOCD(AdaptiveBayesianOnlineChangepoint):
         """
         Initialize belief state
         """
-        state_filter = self.filter.init_bel(mean)       
+        state_filter = self.filter.init_bel(mean, cov)       
         mean = state_filter.mean
         cov = state_filter.cov
 
