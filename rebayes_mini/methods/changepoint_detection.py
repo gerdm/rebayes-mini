@@ -297,7 +297,7 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         """
         ...
 
-    
+
     def p_change(self, changepoints, t):
         alpha = changepoints
         beta = t - alpha + self.b
@@ -340,7 +340,7 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         bel_update = self.update_bel(y, X, bel)
         bel_update = self.update_runlengths(bel_update)
         return bel_update
-    
+
     def update_bel_reset(self, y, X, bel, bel_prior):
         changepoints = bel.changepoints + 1 # increase changepoints by one
         runlengths = bel.runlength * 0
@@ -473,7 +473,7 @@ class BernoulliRegimeChange(ABC):
             lambda: cov_changepoint,
             lambda: bel.cov,
         )
-        
+
         bel = bel.replace(cov=cov_pred)
         return bel
 
@@ -552,7 +552,7 @@ class KalmanFilterAdaptiveDynamics(ABC):
         ...
 
     @abstractmethod
-    def log_posterior_predictive(self, eta, y, X, bel):
+    def log_predictive_density(self, y, X, bel):
         ...
 
 
@@ -571,17 +571,19 @@ class KalmanFilterAdaptiveDynamics(ABC):
 
 
     def step(self, y, X, bel):
-        grad_log_predict_density = jax.grad(self.log_posterior_predictive, argnums=0)
+        grad_log_predict_density = jax.grad(self.log_predictive_density, argnums=0)
 
-        def _inner_pred(i, bel):
-            eta = bel.eta
-            grad = grad_log_predict_density(eta, y, X, bel)
+        def _inner_pred(i, eta, bel):
+            bel_pred = self.predict_bel(eta, bel)
+            grad = grad_log_predict_density(y, X, bel_pred)
             eta = eta + self.ebayes_lr * grad
             eta = eta * (eta > 0) # hard threshold
-            bel = bel.replace(eta=eta)
-            return bel
+            return eta
 
-        bel = jax.lax.fori_loop(0, self.n_inner, _inner_pred, bel)
+        _inner = partial(_inner_pred, bel=bel)
+        eta = jax.lax.fori_loop(0, self.n_inner, _inner, bel.eta)
+        bel = bel.replace(eta=eta)
+        bel = self.predict_bel(bel.eta, bel)
         bel = self.update_bel(y, X, bel)
         return bel
 
@@ -614,9 +616,8 @@ class KalmanFilterBetaAdaptiveDynamics(ABC):
         ...
 
     @abstractmethod
-    def log_posterior_predictive(self, eta, y, X, bel):
+    def log_predictive_density(self, y, X, bel):
         ...
-
 
     @abstractmethod
     def update_bel(self, y, X, bel):
@@ -632,8 +633,16 @@ class KalmanFilterBetaAdaptiveDynamics(ABC):
         return bel
 
 
+    def log_reg_predictive_density(self, eta, y, X, bel):
+        bel = bel.replace(eta=eta)
+        log_p_pred = self.log_predictive_density(y, X, bel)
+        gamma = jax.nn.sigmoid(eta)
+        log_p_prior = distrax.Beta(self.a, self.b).log_prob(gamma)
+        return log_p_pred + log_p_prior
+
+
     def step(self, y, X, bel):
-        grad_log_predict_density = jax.grad(self.log_posterior_predictive, argnums=0)
+        grad_log_predict_density = jax.grad(self.log_reg_predictive_density, argnums=0)
 
         opt_state = self.optimizer.init(bel.eta)
         def _inner_pred(i, state):
@@ -642,12 +651,12 @@ class KalmanFilterBetaAdaptiveDynamics(ABC):
             bel = self.predict_bel(eta, bel)
             grad = grad_log_predict_density(eta, y, X, bel)
             updates, opt = self.optimizer.update(grad, opt, eta)
-            # eta = eta + self.ebayes_lr * grad
             eta = optax.apply_updates(eta, updates)
             bel = bel.replace(eta=eta)
             return bel, opt
 
         bel, _ = jax.lax.fori_loop(0, self.n_inner, _inner_pred, (bel, opt_state))
+        bel = self.predict_bel(bel.eta, bel)
         bel = self.update_bel(y, X, bel)
         return bel
 
@@ -720,7 +729,7 @@ class LinearModelBOCD(BayesianOnlineChangepoint):
 
         bel = bel.replace(mean=mean_posterior, cov=cov_posterior)
         return bel
-    
+
 
 class LinearModelABOCD(AdaptiveBayesianOnlineChangepoint):
     def __init__(self, p_change, K, shock, beta):
@@ -868,8 +877,8 @@ class LinearModelKFA(KalmanFilterAdaptiveDynamics):
         return bel
 
 
-    def log_posterior_predictive(self, eta, y, X, bel):
-        bel = self.predict_bel(eta, bel)
+    def log_predictive_density(self, y, X, bel):
+        # bel = self.predict_bel(eta, bel)
         mean = bel.mean @ X
         cov = X.T @ bel.cov @ X + self.beta
         log_p_pred = distrax.Normal(mean, cov).log_prob(y)
@@ -877,11 +886,10 @@ class LinearModelKFA(KalmanFilterAdaptiveDynamics):
 
 
     def update_bel(self, y, X, bel):
-        bel_pred = self.predict_bel(bel.eta, bel)
-        Kt = bel_pred.cov @ X / (X.T @ bel_pred.cov @ X + self.beta)
+        Kt = bel.cov @ X / (X.T @ bel.cov @ X + self.beta)
 
-        mean = bel_pred.mean + Kt * (y - X.T @ bel_pred.mean)
-        cov = bel_pred.cov - Kt * X.T @ bel_pred.cov
+        mean = bel.mean + Kt * (y - X.T @ bel.mean)
+        cov = bel.cov - Kt * X.T @ bel.cov
         bel = bel.replace(mean=mean, cov=cov)
         return bel
 
@@ -905,22 +913,18 @@ class LinearModelKFBA(KalmanFilterBetaAdaptiveDynamics):
         return bel
 
 
-    def log_posterior_predictive(self, eta, y, X, bel):
-        bel = self.predict_bel(eta, bel)
+    def log_predictive_density(self, y, X, bel):
         mean = bel.mean @ X
         cov = X.T @ bel.cov @ X + self.beta
         log_p_pred = distrax.Normal(mean, cov).log_prob(y)
-        gamma = jax.nn.sigmoid(eta)
-        log_p_pred = log_p_pred + distrax.Beta(self.a, self.b).log_prob(gamma)
         return log_p_pred
 
 
     def update_bel(self, y, X, bel):
-        bel_pred = self.predict_bel(bel.eta, bel)
-        Kt = bel_pred.cov @ X / (X.T @ bel_pred.cov @ X + self.beta)
+        Kt = bel.cov @ X / (X.T @ bel.cov @ X + self.beta)
 
-        mean = bel_pred.mean + Kt * (y - X.T @ bel_pred.mean)
-        cov = bel_pred.cov - Kt * X.T @ bel_pred.cov
+        mean = bel.mean + Kt * (y - X.T @ bel.mean)
+        cov = bel.cov - Kt * X.T @ bel.cov
         bel = bel.replace(mean=mean, cov=cov)
         return bel
 
@@ -1039,7 +1043,7 @@ class ExpfamFBOCD(AdaptiveBayesianOnlineChangepoint):
     ):
         super().__init__(p_change, K)
         self.filter = filter
-    
+
     def log_predictive_density(self, y, X, bel):
         return self.filter.log_predictive_density(y, X, bel)
 
@@ -1048,7 +1052,7 @@ class ExpfamFBOCD(AdaptiveBayesianOnlineChangepoint):
         """
         Initialize belief state
         """
-        state_filter = self.filter.init_bel(mean, cov)       
+        state_filter = self.filter.init_bel(mean, cov)
         mean = state_filter.mean
         cov = state_filter.cov
 
