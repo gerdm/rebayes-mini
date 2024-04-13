@@ -570,12 +570,17 @@ class KalmanFilterAdaptiveDynamics(ABC):
         return bel
 
 
+    def log_reg_predictive_density(self, eta, y, X, bel):
+        bel = self.predict_bel(eta, bel)
+        log_p_pred = self.log_predictive_density(y, X, bel)
+        return log_p_pred
+
+
     def step(self, y, X, bel):
-        grad_log_predict_density = jax.grad(self.log_predictive_density, argnums=0)
+        grad_log_predict_density = jax.grad(self.log_reg_predictive_density, argnums=0)
 
         def _inner_pred(i, eta, bel):
-            bel_pred = self.predict_bel(eta, bel)
-            grad = grad_log_predict_density(y, X, bel_pred)
+            grad = grad_log_predict_density(eta, y, X, bel)
             eta = eta + self.ebayes_lr * grad
             eta = eta * (eta > 0) # hard threshold
             return eta
@@ -1056,7 +1061,6 @@ class ExpfamFBOCD(AdaptiveBayesianOnlineChangepoint):
         mean = state_filter.mean
         cov = state_filter.cov
 
-        d, *_ = mean.shape
         bel = states.BOCDGaussState(
             mean=einops.repeat(mean, "i -> k i", k=self.K),
             cov=einops.repeat(cov, "i j -> k i j", k=self.K),
@@ -1074,6 +1078,35 @@ class ExpfamFBOCD(AdaptiveBayesianOnlineChangepoint):
         bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
 
         return bel
+
+    def update_bel(self, y, X, bel):
+        bel_pred = self.filter._predict_step(bel)
+        bel = self.filter._update_step(bel_pred, y, X)
+        return bel
+
+
+class ExpfamKFA(KalmanFilterAdaptiveDynamics):
+    def __init__(self, n_inner, ebayes_lr, state_drift, filter, deflate_mean=True):
+        super().__init__(n_inner, ebayes_lr, state_drift, deflate_mean)
+        self.filter = filter
+
+    def init_bel(self, mean, cov, eta=0.0):
+        """
+        Initialize belief state
+        """
+        state_filter = self.filter.init_bel(mean, cov)
+        mean = state_filter.mean
+        cov = state_filter.cov
+
+        bel = states.GammaFilterState(
+            mean=mean,
+            cov=cov,
+            eta=eta
+        )
+        return bel
+
+    def log_predictive_density(self, y, X, bel):
+        return self.filter.log_predictive_density(y, X, bel)
 
     def update_bel(self, y, X, bel):
         bel_pred = self.filter._predict_step(bel)
