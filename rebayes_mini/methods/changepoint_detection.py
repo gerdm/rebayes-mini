@@ -275,6 +275,70 @@ class BayesianOnlineChangepoint(ABC):
         return bel, hist
 
 
+class SmoothBayesianOnlineChangepoint(BayesianOnlineChangepoint):
+    def __init__(self, p_change, K, shock):
+        super().__init__(p_change, K)
+        self.shock = shock
+
+    def update_log_joint(self, y, X, bel, bel_prior):
+        log_joint_reset = self.update_log_joint_reset(y, X, bel, bel_prior)
+        log_joint_increase = self.update_log_joint_increase(y, X, bel)
+        # Expand log-joint
+        log_joint = jnp.concatenate([log_joint_reset, log_joint_increase])
+        log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
+        # Compute log-posterior before reducing
+        log_posterior = log_joint - jax.nn.logsumexp(log_joint)
+        # reduce to K values --- index 0 is a changepoint
+        log_joint, top_indices = jax.lax.top_k(log_joint, k=self.K)
+        log_posterior = log_posterior[top_indices]
+        return log_posterior, log_joint, top_indices
+    
+    def deflate_belief(self, bel, bel_prior):
+        gamma = jnp.exp(bel.log_posterior)
+        new_mean = bel.mean * gamma
+        new_cov = bel_prior.cov * (1 - gamma) * self.shock + bel.cov * gamma
+        bel = bel.replace(mean=new_mean, cov=new_cov)
+        return bel
+
+
+    def step(self, y, X, bel, _, callback_fn):
+        """
+        Update belief state and log-joint for a single observation
+        """
+        ix_max = jnp.nanargmax(bel.log_joint)
+        bel_prior = jax.tree.map(lambda x: x[ix_max], bel)
+        m, ix0 = jax.lax.top_k(-bel.runlength, k=1)
+        prunlength = jnp.exp(bel.log_joint[ix0] - jax.nn.logsumexp(bel.log_joint))
+        # new_cov = _.cov * prunlength + (1 - prunlength) * bel_prior.cov
+        new_cov = _.cov
+        new_mean = _.mean
+        # new_cov = jax.lax.cond(self.shock > 0, lambda S: jnp.eye(dim) / self.shock, lambda S: _.cov, bel_prior.cov)
+        # new_mean = bel_prior.mean * prunlength # / jnp.sqrt(jnp.linalg.norm(bel_prior.mean))
+        # gamma = jnp.exp(bel.log_posterior)[ix0] # 'certainty' of a changepoint
+        # new_mean = bel_prior.mean * (1 - gamma)
+        # new_cov = _.cov * gamma * self.shock + bel_prior.cov * (1 - gamma)
+        bel_prior = bel_prior.replace(
+            mean=new_mean,
+            cov=new_cov,
+            log_joint=_.log_joint,
+            runlength=_.runlength,
+            log_posterior=bel_prior.log_posterior,
+        )
+
+        log_posterior, log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
+        bel_posterior = jax.vmap(self.deflate_belief, in_axes=(0, None))(bel, _)
+        bel_posterior = self.update_bel_indices(y, X, bel_posterior, bel_prior, top_indices)
+
+        bel_posterior = self.update_runlengths(bel_posterior, top_indices)
+        bel_posterior = bel_posterior.replace(log_joint=log_joint, log_posterior=log_posterior)
+
+        out = callback_fn(bel_posterior, bel, y, X, top_indices)
+
+        return bel_posterior, out
+
+
+
+
 class BayesianOnlineChangepointHazardDetection(ABC):
     def __init__(self, K, b):
         self.K = K
@@ -751,14 +815,14 @@ class LinearModelABOCD(AdaptiveBayesianOnlineChangepoint):
             mean=jnp.zeros((self.K, d)),
             cov=einops.repeat(cov, "i j -> k i j", k=self.K),
             log_joint=jnp.ones((self.K,)) * -jnp.inf,
-            runlength=jnp.zeros(self.K)
+            runlength=jnp.zeros(self.K),
         )
 
         bel_init = states.BOCDGaussState(
             mean=mean,
             cov=cov,
             log_joint=log_joint_init,
-            runlength=jnp.array(0)
+            runlength=jnp.array(0),
         )
 
         bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
@@ -1038,15 +1102,14 @@ class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
         return log_p_pred
 
 
-
-class ExpfamFBOCD(AdaptiveBayesianOnlineChangepoint):
+class ExpfamFBOCD(SmoothBayesianOnlineChangepoint):
     """
     Low-memory Kalman-filter BOCD
     """
     def __init__(
-        self, p_change, K, filter
+        self, p_change, K, filter, shock
     ):
-        super().__init__(p_change, K)
+        super().__init__(p_change, K, shock)
         self.filter = filter
 
     def log_predictive_density(self, y, X, bel):
@@ -1061,18 +1124,20 @@ class ExpfamFBOCD(AdaptiveBayesianOnlineChangepoint):
         mean = state_filter.mean
         cov = state_filter.cov
 
-        bel = states.BOCDGaussState(
+        bel = states.ABOCDGaussState(
             mean=einops.repeat(mean, "i -> k i", k=self.K),
             cov=einops.repeat(cov, "i j -> k i j", k=self.K),
             log_joint=jnp.ones((self.K,)) * -jnp.inf,
-            runlength=jnp.zeros(self.K)
+            runlength=jnp.zeros(self.K),
+            log_posterior=jnp.zeros(self.K),
         )
 
-        bel_init = states.BOCDGaussState(
+        bel_init = states.ABOCDGaussState(
             mean=mean,
             cov=cov,
             log_joint=log_joint_init,
-            runlength=jnp.array(0)
+            runlength=jnp.array(0),
+            log_posterior=jnp.array(0),
         )
 
         bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
