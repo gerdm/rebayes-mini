@@ -1,5 +1,6 @@
 import jax
 import chex
+import distrax
 import jax.numpy as jnp
 from functools import partial
 from rebayes_mini.methods import gauss_filter as kf
@@ -33,6 +34,28 @@ class ExpfamFilter(kf.ExpfamFilter):
             low_rank=low_rank,
             diagonal=diagonal,
         )
+
+    @partial(jax.jit, static_argnums=(0,))
+    def log_predictive_density(self, y, X, bel):
+        """
+        Equation (59) - (61)
+        """
+        eta = self.link_fn(bel.mean, X).astype(float)
+        mean = self.mean(eta)
+        Rt = jnp.atleast_2d(self.covariance(eta))
+
+        Ht = self.grad_link_fn(bel.mean, X)
+
+        diag_inverse = 1 / bel.diagonal
+        C1 = jnp.einsum("ji,j,jk->ik", bel.low_rank, diag_inverse, bel.low_rank)
+        C1 = jnp.linalg.inv(jnp.eye(self.rank) + C1)
+        C2 = jnp.einsum("i,ij,jk,lk,l->il", diag_inverse, bel.low_rank, C1, bel.low_rank, diag_inverse)
+        C3 = jnp.eye(len(bel.mean)) * diag_inverse  - C2
+        covariance = jnp.einsum("ij,jk,lk->il", Ht, C3, Ht) + Rt
+
+        log_p_pred = distrax.MultivariateNormalFullCovariance(mean, covariance).log_prob(y)
+        return log_p_pred
+
     
     def _predict(self, state):
         I_lr = jnp.eye(self.rank)
@@ -61,8 +84,8 @@ class ExpfamFilter(kf.ExpfamFilter):
     def _update_dlr(self, low_rank_hat):
         singular_vectors, singular_values, _ = jnp.linalg.svd(low_rank_hat, full_matrices=False)
 
-        # singular_vectors_drop = singular_vectors[:, self.rank:] # Ut
-        # singular_values_drop = singular_values[self.rank:] # Λt
+        singular_vectors_drop = singular_vectors[:, self.rank:] # Ut
+        singular_values_drop = singular_values[self.rank:] # Λt
 
         # Update new low rank
         singular_vectors = singular_vectors[:, :self.rank] # Ut
@@ -70,14 +93,13 @@ class ExpfamFilter(kf.ExpfamFilter):
         low_rank_new = jnp.einsum("Dd,d->Dd", singular_vectors, singular_values)
 
         # Obtain additive term for diagonal
-        # lr_drop = jnp.einsum("Dd,d->Dd", singular_vectors_drop, singular_values_drop)
-        # diag_drop = jnp.einsum("ij,ij->i", lr_drop, lr_drop)
-        diag_drop = jnp.einsum("Dd,Dd->D", low_rank_hat, low_rank_hat)
+        lr_drop = jnp.einsum("Dd,d->Dd", singular_vectors_drop, singular_values_drop)
+        diag_drop = jnp.einsum("ij,ij->i", lr_drop, lr_drop)
 
         return low_rank_new, diag_drop
                 
 
-    def _update(self, bel_pred, x, y):
+    def _update(self, bel_pred, y, x):
         eta = self.link_fn(bel_pred.mean, x).astype(float)
         yhat = self.mean(eta)
         yobs = self.suff_statistic(y)
@@ -117,11 +139,11 @@ class ExpfamFilter(kf.ExpfamFilter):
 
 
     def step(self, bel, xs, callback_fn):
-        xt, yt = xs
+        x, y = xs
         bel_pred = self._predict(bel)
-        bel_update = self._update(bel_pred, xt, yt)
+        bel_update = self._update(bel_pred, y, x)
 
-        output = callback_fn(bel_update, bel_pred, xt, yt)
+        output = callback_fn(bel_update, bel_pred, y, x)
         return bel_update, output
 
 
