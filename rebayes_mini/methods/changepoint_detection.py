@@ -275,7 +275,7 @@ class BayesianOnlineChangepoint(ABC):
         return bel, hist
 
 
-class SmoothBayesianOnlineChangepoint(BayesianOnlineChangepoint):
+class SoftBayesianOnlineChangepoint(BayesianOnlineChangepoint):
     def __init__(self, p_change, K, shock):
         super().__init__(p_change, K)
         self.shock = shock
@@ -293,6 +293,7 @@ class SmoothBayesianOnlineChangepoint(BayesianOnlineChangepoint):
         log_posterior = log_posterior[top_indices]
         return log_posterior, log_joint, top_indices
     
+
     def deflate_belief(self, bel, bel_prior):
         gamma = jnp.exp(bel.log_posterior)
         new_mean = bel.mean * gamma
@@ -1102,9 +1103,9 @@ class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
         return log_p_pred
 
 
-class ExpfamFBOCD(SmoothBayesianOnlineChangepoint):
+class ExpfamFBOCD(SoftBayesianOnlineChangepoint):
     """
-    Low-memory Kalman-filter BOCD
+    ...
     """
     def __init__(
         self, p_change, K, filter, shock
