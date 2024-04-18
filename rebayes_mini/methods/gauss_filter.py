@@ -107,14 +107,14 @@ class ExtendedKalmanFilter:
             cov=cov,
         )
 
-    def _predict_step(self, bel):
+    def _predict(self, bel):
         Ft = self.jac_latent(bel.mean)
         mean_pred = self.vlatent_fn(bel.mean)
         cov_pred = Ft @ bel.cov @ Ft.T + self.dynamics_covariance
         bel = bel.replace(mean=mean_pred, cov=cov_pred)
         return bel
 
-    def _update_step(self, bel, y, x):
+    def _update(self, bel, y, x):
         Ht = self.jac_obs(bel.mean, x)
         Rt = self.observation_covariance
 
@@ -130,8 +130,8 @@ class ExtendedKalmanFilter:
 
     def step(self, bel, xs, callback_fn):
         xt, yt = xs
-        bel_pred = self._predict_step(bel)
-        bel_update = self._update_step(bel_pred, yt, xt)
+        bel_pred = self._predict(bel)
+        bel_update = self._update(bel_pred, yt, xt)
 
         output = callback_fn(bel_update, bel_pred, yt, xt)
         return bel_update, output
@@ -199,7 +199,7 @@ class ExpfamFilter:
         return log_p_pred
 
 
-    def _predict_step(self, bel):
+    def _predict(self, bel):
         # TODO: add dynamics' function
         nparams = len(bel.mean)
         I = jnp.eye(nparams)
@@ -208,7 +208,7 @@ class ExpfamFilter:
         bel = bel.replace(mean=pmean_pred, cov=pcov_pred)
         return bel
 
-    def _update_step(self, bel, y, x):
+    def _update(self, bel, y, x):
         eta = self.link_fn(bel.mean, x).astype(float)
         yhat = self.mean(eta)
         y = self.suff_statistic(y)
@@ -226,8 +226,8 @@ class ExpfamFilter:
 
     def step(self, bel, xs, callback_fn):
         x, y = xs
-        bel_pred = self._predict_step(bel)
-        bel_update = self._update_step(bel_pred, y, x)
+        bel_pred = self._predict(bel)
+        bel_update = self._update(bel_pred, y, x)
 
         output = callback_fn(bel_update, bel_pred, y, x)
         return bel_update, output
