@@ -311,20 +311,22 @@ class SoftBayesianOnlineChangepoint(BayesianOnlineChangepoint):
         m, ix0 = jax.lax.top_k(-bel.runlength, k=1)
         prunlength = jnp.exp(bel.log_joint[ix0] - jax.nn.logsumexp(bel.log_joint))
         # new_cov = _.cov * prunlength + (1 - prunlength) * bel_prior.cov
-        new_cov = _.cov
-        new_mean = _.mean
         # new_cov = jax.lax.cond(self.shock > 0, lambda S: jnp.eye(dim) / self.shock, lambda S: _.cov, bel_prior.cov)
         # new_mean = bel_prior.mean * prunlength # / jnp.sqrt(jnp.linalg.norm(bel_prior.mean))
         # gamma = jnp.exp(bel.log_posterior)[ix0] # 'certainty' of a changepoint
         # new_mean = bel_prior.mean * (1 - gamma)
         # new_cov = _.cov * gamma * self.shock + bel_prior.cov * (1 - gamma)
-        bel_prior = bel_prior.replace(
-            mean=new_mean,
-            cov=new_cov,
-            log_joint=_.log_joint,
-            runlength=_.runlength,
-            log_posterior=bel_prior.log_posterior,
-        )
+        ### Alternative updaate ###
+        # new_cov = _.cov
+        # new_mean = _.mean
+        # bel_prior = bel_prior.replace(
+        #     mean=new_mean,
+        #     cov=new_cov,
+        #     log_joint=_.log_joint,
+        #     runlength=_.runlength,
+        #     log_posterior=bel_prior.log_posterior,
+        # )
+        bel_prior = _.replace(log_posterior=bel_prior.log_posterior)
 
         log_posterior, log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
         bel_posterior = jax.vmap(self.deflate_belief, in_axes=(0, None))(bel, _)
@@ -336,7 +338,6 @@ class SoftBayesianOnlineChangepoint(BayesianOnlineChangepoint):
         out = callback_fn(bel_posterior, bel, y, X, top_indices)
 
         return bel_posterior, out
-
 
 
 
@@ -1105,7 +1106,7 @@ class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
 
 class ExpfamFBOCD(SoftBayesianOnlineChangepoint):
     """
-    ...
+    Low-memory Kalman-filter BOCD
     """
     def __init__(
         self, p_change, K, filter, shock
@@ -1116,6 +1117,10 @@ class ExpfamFBOCD(SoftBayesianOnlineChangepoint):
     def log_predictive_density(self, y, X, bel):
         return self.filter.log_predictive_density(y, X, bel)
 
+    def update_bel(self, y, X, bel):
+        bel_pred = self.filter._predict(bel)
+        bel = self.filter._update(bel_pred, y, X)
+        return bel
 
     def init_bel(self, mean, cov, log_joint_init):
         """
@@ -1145,9 +1150,48 @@ class ExpfamFBOCD(SoftBayesianOnlineChangepoint):
 
         return bel
 
+
+class LoFiExpfamFBOCD(SoftBayesianOnlineChangepoint):
+    """
+    Low-memory Kalman-filter BOCD
+    """
+    def __init__(
+        self, p_change, K, filter, shock
+    ):
+        super().__init__(p_change, K, shock)
+        self.filter = filter
+
+    def deflate_belief(self, bel, bel_prior):
+        gamma = jnp.exp(bel.log_posterior)
+        new_mean = bel.mean * gamma
+        new_diagonal = bel_prior.diagonal * (1 - gamma) * self.shock + bel.diagonal * gamma
+        low_rank = bel_prior.low_rank * (1 - gamma) + bel.low_rank * gamma
+        bel = bel.replace(mean=new_mean, diagonal=new_diagonal, low_rank=low_rank)
+        return bel
+
+    def log_predictive_density(self, y, X, bel):
+        return self.filter.log_predictive_density(y, X, bel)
+
     def update_bel(self, y, X, bel):
-        bel_pred = self.filter._predict_step(bel)
-        bel = self.filter._update_step(bel_pred, y, X)
+        # bel = self.filter._predict(bel)
+        bel = self.filter._update(bel, y, X)
+        return bel
+
+    def init_bel(self, mean, cov=1.0):
+        state_filter = self.filter.init_bel(mean, cov)
+        mean = state_filter.mean
+        diagonal = state_filter.diagonal
+        low_rank = state_filter.low_rank
+
+        bel = states.ABOCDLoFiState(
+            mean=einops.repeat(mean, "i -> k i", k=self.K),
+            diagonal=einops.repeat(diagonal, "i -> k i", k=self.K),
+            low_rank=einops.repeat(low_rank, "i j -> k i j", k=self.K),
+            log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(0.0),
+            runlength=jnp.zeros(self.K),
+            log_posterior=jnp.zeros(self.K),
+        )
+
         return bel
 
 
@@ -1175,6 +1219,6 @@ class ExpfamKFA(KalmanFilterAdaptiveDynamics):
         return self.filter.log_predictive_density(y, X, bel)
 
     def update_bel(self, y, X, bel):
-        bel_pred = self.filter._predict_step(bel)
-        bel = self.filter._update_step(bel_pred, y, X)
+        bel_pred = self.filter._predict(bel)
+        bel = self.filter._update(bel_pred, y, X)
         return bel

@@ -48,3 +48,17 @@ class GammaFilterState:
     mean: chex.Array
     cov: chex.Array
     eta: float
+
+
+@chex.dataclass
+class ABOCDLoFiState:
+    """
+    Low-rank filter state with
+    soft changepoint detection
+    """
+    mean: chex.Array
+    diagonal: chex.Array
+    low_rank: chex.Array
+    log_joint: chex.Array
+    runlength: chex.Array
+    log_posterior: chex.Array
