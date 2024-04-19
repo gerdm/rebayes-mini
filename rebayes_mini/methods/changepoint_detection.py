@@ -135,7 +135,7 @@ class FullMemoryBayesianOnlineChangepointDetection(ABC):
         return marginal, runlength_log_posterior
 
 
-    def scan(self, y, X, bel_prior):
+    def scan(self, y, X, bel_hist):
         """
         Bayesian online changepoint detection (BOCD)
         discrete filter
@@ -146,7 +146,7 @@ class FullMemoryBayesianOnlineChangepointDetection(ABC):
         marginal = jnp.zeros(n_samples)
         log_joint = jnp.zeros((size_filter,))
         log_cond = jnp.zeros((size_filter,))
-        bel_hist = self.init_bel(y, X, bel_prior, size_filter)
+        # bel_hist = self.init_bel(y, X, bel_prior, size_filter)
 
         for t in tqdm(range(n_samples)):
             tix = jnp.maximum(0, t-1)
@@ -1068,13 +1068,14 @@ class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
         self.beta = beta
 
 
-    def init_bel(self, y_hist, X_hist, bel_init, size_filter):
-        _, d = X_hist.shape
+    def init_bel(self, mean, cov, size_filter):
+        d = mean.shape[0]
         hist_mean = jnp.zeros((size_filter, d))
         hist_cov = jnp.zeros((size_filter, d, d))
-
-        bel_hist = states.GaussState(mean=hist_mean, cov=hist_cov)
-        bel_hist = jax.tree.map(lambda hist, init: hist.at[0].set(init), bel_hist, bel_init)
+        bel_hist = states.GaussState(
+            mean=hist_mean.at[0].set(mean),
+            cov=hist_cov.at[0].set(cov * jnp.eye(d))
+        )
         return bel_hist
 
 
@@ -1222,3 +1223,46 @@ class ExpfamKFA(KalmanFilterAdaptiveDynamics):
         bel_pred = self.filter._predict(bel)
         bel = self.filter._update(bel_pred, y, X)
         return bel
+
+
+class RobustLinearModelFMBOCD(LinearModelFMBOCD):
+    """"""
+    def __init__(self, p_change, beta, c):
+        super().__init__(p_change, beta)
+        self.c = c
+    
+
+    def imq_kernel(self, residual):
+        """
+        Inverse multi-quadratic kernel
+        """
+        return 1 / jnp.sqrt(1 + residual ** 2 / self.c ** 2)
+
+    def  update_bel_single(self, y, X, bel ):
+        """
+        Update belief state for a single observation
+        """
+        cov_previous = bel.cov
+        mean_previous = bel.mean
+
+        prec_previous = jnp.linalg.inv(cov_previous)
+
+        Wt = self.imq_kernel(y - X @ mean_previous)
+        prec_posterior = prec_previous + Wt ** 2 * self.beta * jnp.outer(X, X)
+        cov_posterior = jnp.linalg.inv(prec_posterior)
+        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + Wt ** 2 * self.beta * X * y)
+
+        bel = states.GaussState(mean=mean_posterior, cov=cov_posterior)
+        return bel
+    
+    def log_predictive_density(self, y, X, bel):
+        """
+        Compute log-posterior predictive for a Gaussian with known variance
+        """
+        mean = bel.mean @ X
+        residual = y - mean
+        Wt = self.imq_kernel(residual)
+
+        scale = 1 / (self.beta * Wt ** 2) + X @ bel.cov @ X
+        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
+        return log_p_pred
