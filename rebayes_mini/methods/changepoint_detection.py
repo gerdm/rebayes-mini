@@ -673,11 +673,13 @@ class KalmanFilterAdaptiveDynamics(ABC):
 
 
 class KalmanFilterBetaAdaptiveDynamics(ABC):
-    def __init__(self, n_inner, ebayes_lr, state_drift=1.0):
+    def __init__(self, n_inner, ebayes_lr, a, b, state_drift=1.0):
         self.n_inner = n_inner
         self.ebayes_lr = ebayes_lr # empirical bayes learning rate
         self.state_drift = state_drift
-        self.optimizer = optax.adam(-ebayes_lr)
+        self.optimizer = optax.sgd(-ebayes_lr)
+        self.a = a
+        self.b = b
 
     @abstractmethod
     def init_bel(self):
@@ -695,18 +697,22 @@ class KalmanFilterBetaAdaptiveDynamics(ABC):
         ...
 
     def predict_bel(self, eta, bel):
-        gamma = jax.nn.sigmoid(eta)
+        # gamma = jax.nn.sigmoid(eta)
+        gamma = jnp.exp(-eta / 2)
         dim = bel.mean.shape[0]
 
         mean = bel.mean
-        cov = gamma * bel.cov + (1 - gamma) * jnp.eye(dim) * self.state_drift
+        # mean = gamma * bel.mean
+        # cov = gamma  ** 2 * bel.cov + (1 - gamma ** 2) * jnp.eye(dim) * self.state_drift
+        cov = bel.cov + jnp.eye(dim) * self.state_drift * (1 - gamma ** 2)
         bel = bel.replace(mean=mean, cov=cov)
         return bel
 
 
     def log_reg_predictive_density(self, eta, y, X, bel):
-        bel = bel.replace(eta=eta)
+        bel = self.predict_bel(eta, bel)
         log_p_pred = self.log_predictive_density(y, X, bel)
+        return log_p_pred
         gamma = jax.nn.sigmoid(eta)
         log_p_prior = distrax.Beta(self.a, self.b).log_prob(gamma)
         return log_p_pred + log_p_prior
@@ -719,10 +725,11 @@ class KalmanFilterBetaAdaptiveDynamics(ABC):
         def _inner_pred(i, state):
             bel, opt = state
             eta = bel.eta
-            bel = self.predict_bel(eta, bel)
             grad = grad_log_predict_density(eta, y, X, bel)
-            updates, opt = self.optimizer.update(grad, opt, eta)
-            eta = optax.apply_updates(eta, updates)
+            # updates, opt = self.optimizer.update(grad, opt, eta)
+            # eta = optax.apply_updates(eta, updates)
+            eta = eta + self.ebayes_lr * grad
+            eta = eta * (eta > 0) # hard threshold
             bel = bel.replace(eta=eta)
             return bel, opt
 
@@ -967,10 +974,8 @@ class LinearModelKFA(KalmanFilterAdaptiveDynamics):
 
 class LinearModelKFBA(KalmanFilterBetaAdaptiveDynamics):
     def __init__(self, n_inner, ebayes_lr, beta, state_drift, a, b):
-        super().__init__(n_inner, ebayes_lr, state_drift)
+        super().__init__(n_inner, ebayes_lr, a, b, state_drift)
         self.beta = 1/beta # variance to precision
-        self.a = a
-        self.b = b
 
     def init_bel(self, mean, cov, eta=0.0):
         """
@@ -1224,6 +1229,35 @@ class ExpfamKFA(KalmanFilterAdaptiveDynamics):
         bel = self.filter._update(bel_pred, y, X)
         return bel
 
+
+class ExpfamKFAQ(KalmanFilterBetaAdaptiveDynamics):
+    def __init__(self, n_inner, ebayes_lr, a, b, state_drift, filter, deflate_mean=True):
+        # super().__init__(n_inner, ebayes_lr, a, b, state_drift, deflate_mean)
+        super().__init__(n_inner, ebayes_lr, a, b, state_drift)
+        self.filter = filter
+
+    def init_bel(self, mean, cov, eta=0.0):
+        """
+        Initialize belief state
+        """
+        state_filter = self.filter.init_bel(mean, cov)
+        mean = state_filter.mean
+        cov = state_filter.cov
+
+        bel = states.GammaFilterState(
+            mean=mean,
+            cov=cov,
+            eta=eta
+        )
+        return bel
+
+    def log_predictive_density(self, y, X, bel):
+        return self.filter.log_predictive_density(y, X, bel)
+
+    def update_bel(self, y, X, bel):
+        bel_pred = self.filter._predict(bel)
+        bel = self.filter._update(bel_pred, y, X)
+        return bel
 
 class RobustLinearModelFMBOCD(LinearModelFMBOCD):
     """"""
