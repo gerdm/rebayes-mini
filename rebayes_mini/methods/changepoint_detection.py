@@ -8,7 +8,6 @@ from abc import ABC, abstractmethod
 from functools import partial
 from rebayes_mini import states
 from rebayes_mini import callbacks
-from rebayes_mini.methods.gauss_filter import MultinomialFilter
 
 
 class FullMemoryBayesianOnlineChangepointDetection(ABC):
