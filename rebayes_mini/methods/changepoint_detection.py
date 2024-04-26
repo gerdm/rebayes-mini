@@ -612,7 +612,7 @@ class BernoulliRegimeChange(ABC):
         return bel, hist
 
 
-class KalmanFilterAdaptiveDynamics(ABC):
+class EmpiricalBayesAdaptive(ABC):
     def __init__(self, n_inner, ebayes_lr, state_drift, deflate_mean=True):
         self.n_inner = n_inner
         self.ebayes_lr = ebayes_lr # empirical bayes learning rate
@@ -815,7 +815,7 @@ class LinearModelABOCD(CovarianceResetRunlenght):
         return bel
 
 
-class LinearModelKFA(KalmanFilterAdaptiveDynamics):
+class LinearModelKFA(EmpiricalBayesAdaptive):
     def __init__(self, n_inner, ebayes_lr, beta, state_drift, deflate_mean=True):
         super().__init__(n_inner, ebayes_lr, state_drift, deflate_mean)
         self.beta = 1/beta # variance to precision
@@ -1130,7 +1130,7 @@ class LoFiExpfamFBOCD(SoftBayesianOnlineChangepoint):
         return bel
 
 
-class ExpfamKFA(KalmanFilterAdaptiveDynamics):
+class ExpfamEBA(EmpiricalBayesAdaptive):
     def __init__(self, n_inner, ebayes_lr, state_drift, filter, deflate_mean=True):
         super().__init__(n_inner, ebayes_lr, state_drift, deflate_mean)
         self.filter = filter
@@ -1187,6 +1187,7 @@ class ExpfamKFAQ(KalmanFilterBetaAdaptiveDynamics):
         bel_pred = self.filter._predict(bel)
         bel = self.filter._update(bel_pred, y, X)
         return bel
+
 
 class RobustLinearModelFMBOCD(LinearModelFMBOCD):
     """"""
