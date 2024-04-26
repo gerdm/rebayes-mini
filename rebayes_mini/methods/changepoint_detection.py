@@ -882,62 +882,6 @@ class LinearModelKFBA(KalmanFilterBetaAdaptiveDynamics):
         return bel
 
 
-class LinearModelBOCHD(BayesianOnlineChangepointHazardDetection):
-    def __init__(self, K, b, beta):
-        super().__init__(K, b)
-        self.beta = beta
-
-
-    def init_bel(self, mean, cov, log_weight):
-        """
-        Initialize belief state
-        """
-        d, *_ = mean.shape
-        bel = states.BOCHDGaussState(
-            mean=jnp.zeros((self.K, d)),
-            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
-            log_joint=jnp.ones((self.K,)) * -jnp.inf,
-            runlength=jnp.zeros(self.K),
-            changepoints=jnp.zeros(self.K)
-        )
-
-        bel_init = states.BOCHDGaussState(
-            mean=mean,
-            cov=cov,
-            log_joint=log_weight,
-            runlength=jnp.array(0),
-            changepoints=jnp.array(0)
-        )
-
-        bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
-
-        return bel
-
-
-    def log_predictive_density(self, y, X, bel):
-        """
-        Compute log-posterior predictive for a Gaussian with known variance
-        """
-        mean = bel.mean @ X
-        scale = 1 / self.beta + X @  bel.cov @ X
-        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
-        return log_p_pred
-
-
-    def update_bel(self, y, X, bel):
-        cov_previous = bel.cov
-        mean_previous = bel.mean
-
-        prec_previous = jnp.linalg.inv(cov_previous)
-
-        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
-        cov_posterior = jnp.linalg.inv(prec_posterior)
-        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
-
-        bel = bel.replace(mean=mean_posterior, cov=cov_posterior)
-        return bel
-
-
 class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
     """
     Full-memory Bayesian Online Changepoint Detection for linear model
@@ -1055,6 +999,43 @@ class ExpfamBRC(BernoulliRegimeChange):
             log_weight=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(log_weight),
             segment=jnp.zeros(self.K)
         )
+        return bel
+
+
+class ExpfamBOCHD(BayesianOnlineChangepointHazardDetection):
+    def __init__(
+        self, K, b, filter
+    ):
+        super().__init__(K, b)
+        self.filter = filter
+    
+
+    def init_bel(self, mean, cov, log_weight):
+        """
+        Initialize belief state
+        """
+        state_filter = self.filter.init_bel(mean, cov)
+        mean = state_filter.mean
+        cov = state_filter.cov
+
+        bel = states.BOCHDGaussState(
+            mean=einops.repeat(mean, "i -> k i", k=self.K),
+            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
+            log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(log_weight),
+            runlength=jnp.zeros(self.K),
+            changepoints=jnp.zeros(self.K)
+        )
+
+        return bel
+
+    
+    def log_predictive_density(self, y, X, bel):
+        return self.filter.log_predictive_density(y, X, bel)
+    
+
+    def update_bel(self, y, X, bel):
+        bel_pred = self.filter._predict(bel)
+        bel = self.filter._update(bel_pred, y, X)
         return bel
 
 
