@@ -296,7 +296,8 @@ class SoftBayesianOnlineChangepoint(BayesianOnlineChangepoint):
     def deflate_belief(self, bel, bel_prior):
         gamma = jnp.exp(bel.log_posterior)
         new_mean = bel.mean * gamma
-        new_cov = bel_prior.cov * (1 - gamma) * self.shock + bel.cov * gamma
+        new_cov = bel.cov * gamma ** 2 + bel_prior.cov * (1 - gamma ** 2) * self.shock
+        # new_cov = bel_prior.cov ** 2 * (1 - gamma) * self.shock + bel.cov * gamma ** 2
         bel = bel.replace(mean=new_mean, cov=new_cov)
         return bel
 
@@ -337,7 +338,6 @@ class SoftBayesianOnlineChangepoint(BayesianOnlineChangepoint):
         out = callback_fn(bel_posterior, bel, y, X, top_indices)
 
         return bel_posterior, out
-
 
 
 class BayesianOnlineChangepointHazardDetection(ABC):
@@ -459,8 +459,11 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         return bel, hist
 
 
-class AdaptiveBayesianOnlineChangepoint(BayesianOnlineChangepoint):
+class CovarianceResetRunlenght(BayesianOnlineChangepoint):
     def __init__(self, p_change, K, shock=0.0):
+        """
+        Covariance-reset runlength (CRRL)
+        """
         super().__init__(p_change, K)
         self.shock = shock
 
@@ -543,12 +546,19 @@ class BernoulliRegimeChange(ABC):
         return bel
 
 
+    def predict_and_update_bel(self, y, X, bel, has_changepoint):
+        bel = self.predict_bel(bel, has_changepoint)
+        bel = self.update_bel(y, X, bel)
+        bel = bel.replace(segment=bel.segment + has_changepoint)
+        return bel
+
+
     def split_and_update(self, y, X, bel):
         """
         Update belief state and log-joint for a single observation
         """
-        bel_up = self.update_bel(y, X, bel, has_changepoint=1.0)
-        bel_down = self.update_bel(y, X, bel, has_changepoint=0.0)
+        bel_up = self.predict_and_update_bel(y, X, bel, has_changepoint=1.0)
+        bel_down = self.predict_and_update_bel(y, X, bel, has_changepoint=0.0)
 
         log_pp_up = self.log_predictive_density(y, X, bel_up)
         log_pp_down = self.log_predictive_density(y, X, bel_down)
@@ -751,64 +761,7 @@ class KalmanFilterBetaAdaptiveDynamics(ABC):
         return bel, hist
 
 
-class LinearModelBOCD(BayesianOnlineChangepoint):
-    """
-    Low-memory LM-BOCD
-    """
-    def __init__(self, p_change, K, beta):
-        super().__init__(p_change, K)
-        self.beta = beta
-
-
-    def init_bel(self, mean, cov, log_joint_init):
-        """
-        Initialize belief state
-        """
-        d, *_ = mean.shape
-        bel = states.BOCDGaussState(
-            mean=jnp.zeros((self.K, d)),
-            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
-            log_joint=jnp.ones((self.K,)) * -jnp.inf,
-            runlength=jnp.zeros(self.K)
-        )
-
-        bel_init = states.BOCDGaussState(
-            mean=mean,
-            cov=cov,
-            log_joint=log_joint_init,
-            runlength=jnp.array(0)
-        )
-
-        bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
-
-        return bel
-
-    @partial(jax.jit, static_argnums=(0,))
-    def log_predictive_density(self, y, X, bel):
-        """
-        Compute log-posterior predictive for a Gaussian with known variance
-        """
-        mean = bel.mean @ X
-        scale = 1 / self.beta + X @  bel.cov @ X
-        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
-        return log_p_pred
-
-
-    def update_bel(self, y, X, bel):
-        cov_previous = bel.cov
-        mean_previous = bel.mean
-
-        prec_previous = jnp.linalg.inv(cov_previous)
-
-        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
-        cov_posterior = jnp.linalg.inv(prec_posterior)
-        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
-
-        bel = bel.replace(mean=mean_posterior, cov=cov_posterior)
-        return bel
-
-
-class LinearModelABOCD(AdaptiveBayesianOnlineChangepoint):
+class LinearModelABOCD(CovarianceResetRunlenght):
     def __init__(self, p_change, K, shock, beta):
         super().__init__(p_change, K, shock)
         self.beta = beta
@@ -1032,6 +985,77 @@ class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
         scale = 1 / self.beta + X @  bel.cov @ X
         log_p_pred = distrax.Normal(mean, scale).log_prob(y)
         return log_p_pred
+
+
+class ExpfamBOCD(BayesianOnlineChangepoint):
+    """
+    BOCD composed of ExpfamEKFs
+    """
+    def __init__(
+            self, p_change, K, filter
+    ):
+        super().__init__(p_change, K)
+        self.filter = filter
+    
+    def log_predictive_density(self, y, X, bel):
+        return self.filter.log_predictive_density(y, X, bel)
+    
+
+    def update_bel(self, y, X, bel):
+        bel_pred = self.filter._predict(bel)
+        bel = self.filter._update(bel_pred, y, X)
+        return bel
+    
+
+    def init_bel(self, mean, cov, log_joint_init):
+        """
+        Initialize belief state
+        """
+        state_filter = self.filter.init_bel(mean, cov)
+        mean = state_filter.mean
+        cov = state_filter.cov
+
+        bel = states.BOCDGaussState(
+            mean=einops.repeat(mean, "i -> k i", k=self.K),
+            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
+            log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(log_joint_init),
+            runlength=jnp.zeros(self.K)
+        )
+
+        return bel
+
+
+class ExpfamBRC(BernoulliRegimeChange):
+    def __init__(
+        self, p_change, K, shock, inflate_prior_covariance, filter
+    ):
+        super().__init__(p_change, K, shock, inflate_prior_covariance)
+        self.filter = filter
+
+    def log_predictive_density(self, y, X, bel):
+        return self.filter.log_predictive_density(y, X, bel)
+    
+
+    def update_bel(self, y, X, bel):
+        bel = self.filter._predict(bel)
+        bel = self.filter._update(bel, y, X)
+        return bel
+
+    def init_bel(self, mean, cov, log_weight):
+        """
+        Initialize belief state
+        """
+        state_filter = self.filter.init_bel(mean, cov)
+        mean = state_filter.mean
+        cov = state_filter.cov
+
+        bel = states.BernoullChangeGaussState(
+            mean=einops.repeat(mean, "i -> k i", k=self.K),
+            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
+            log_weight=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(log_weight),
+            segment=jnp.zeros(self.K)
+        )
+        return bel
 
 
 class ExpfamFBOCD(SoftBayesianOnlineChangepoint):
