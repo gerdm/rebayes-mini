@@ -192,9 +192,10 @@ class ExpfamFilter:
         eta = self.link_fn(bel.mean, X).astype(float)
         mean = self.mean(eta)
         Rt = jnp.atleast_2d(self.covariance(eta))
-        Ht = Rt @ self.grad_link_fn(bel.mean, X)
+        # Ht = Rt @ self.grad_link_fn(bel.mean, X)
+        Ht = self.grad_link_fn(bel.mean, X)
         covariance = Ht @ bel.cov @ Ht.T + Rt
-
+        mean = jnp.atleast_1d(mean)
         log_p_pred = distrax.MultivariateNormalFullCovariance(mean, covariance).log_prob(y)
         return log_p_pred
 
@@ -215,7 +216,7 @@ class ExpfamFilter:
         err = y - yhat
 
         Rt = jnp.atleast_2d(self.covariance(eta))
-        Ht = Rt @ self.grad_link_fn(bel.mean, x)
+        Ht = self.grad_link_fn(bel.mean, x)
         St = Ht @ bel.cov @ Ht.T + Rt
         Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
 
@@ -246,14 +247,18 @@ class GaussianFilter(ExpfamFilter):
             apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
         )
         self.variance = variance
+    
+    def mean(self, eta):
+        return eta
+    
+    def covariance(self, eta):
+        return self.variance * jnp.eye(1)
+    
+    def _suff_stat(self, y):
+        return y
 
-    @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
         return (eta ** 2 / 2).sum()
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _suff_stat(self, y):
-        return y / jnp.sqrt(self.variance)
 
 
 class BernoulliFilter(ExpfamFilter):
