@@ -1,5 +1,4 @@
 import jax
-import optax
 import einops
 import distrax
 import jax.numpy as jnp
@@ -613,11 +612,14 @@ class BernoulliRegimeChange(ABC):
 
 
 class EmpiricalBayesAdaptive(ABC):
-    def __init__(self, n_inner, ebayes_lr, state_drift, deflate_mean=True):
+    def __init__(
+        self, n_inner, ebayes_lr, state_drift, deflate_mean, deflate_covariance
+    ):
         self.n_inner = n_inner
         self.ebayes_lr = ebayes_lr # empirical bayes learning rate
         self.state_drift = state_drift
         self.deflate_mean = deflate_mean * 1.0
+        self.deflate_covariance = deflate_covariance * 1.0
 
     @abstractmethod
     def init_bel(self):
@@ -639,8 +641,11 @@ class EmpiricalBayesAdaptive(ABC):
         gamma = jnp.exp(-eta / 2)
         dim = bel.mean.shape[0]
 
-        mean = (gamma ** self.deflate_mean) * bel.mean
-        cov = gamma ** 2 * bel.cov + (1 - gamma ** 2) * jnp.eye(dim) * self.state_drift
+        deflation_mean = gamma ** self.deflate_mean
+        deflation_covariance = (gamma ** 2) ** self.deflate_covariance
+
+        mean = deflation_mean * bel.mean
+        cov = deflation_covariance * bel.cov + (1 - gamma ** 2) * jnp.eye(dim) * self.state_drift
         bel = bel.replace(mean=mean, cov=cov)
         return bel
 
@@ -663,86 +668,6 @@ class EmpiricalBayesAdaptive(ABC):
         _inner = partial(_inner_pred, bel=bel)
         eta = jax.lax.fori_loop(0, self.n_inner, _inner, bel.eta)
         bel = bel.replace(eta=eta)
-        bel = self.predict_bel(bel.eta, bel)
-        bel = self.update_bel(y, X, bel)
-        return bel
-
-
-    def scan(self, y, X, bel, callback_fn=None):
-        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
-        def _step(bel, yX):
-            y, X = yX
-            bel_posterior = self.step(y, X, bel)
-            out = callback_fn(bel_posterior, bel, y, X)
-
-            return bel_posterior, out
-
-        bel, hist = jax.lax.scan(_step, bel, (y, X))
-        return bel, hist
-
-
-class KalmanFilterBetaAdaptiveDynamics(ABC):
-    def __init__(self, n_inner, ebayes_lr, a, b, state_drift=1.0):
-        self.n_inner = n_inner
-        self.ebayes_lr = ebayes_lr # empirical bayes learning rate
-        self.state_drift = state_drift
-        self.optimizer = optax.sgd(-ebayes_lr)
-        self.a = a
-        self.b = b
-
-    @abstractmethod
-    def init_bel(self):
-        """
-        Initialize belief state
-        """
-        ...
-
-    @abstractmethod
-    def log_predictive_density(self, y, X, bel):
-        ...
-
-    @abstractmethod
-    def update_bel(self, y, X, bel):
-        ...
-
-    def predict_bel(self, eta, bel):
-        # gamma = jax.nn.sigmoid(eta)
-        gamma = jnp.exp(-eta / 2)
-        dim = bel.mean.shape[0]
-
-        mean = bel.mean
-        # mean = gamma * bel.mean
-        # cov = gamma  ** 2 * bel.cov + (1 - gamma ** 2) * jnp.eye(dim) * self.state_drift
-        cov = bel.cov + jnp.eye(dim) * self.state_drift * (1 - gamma ** 2)
-        bel = bel.replace(mean=mean, cov=cov)
-        return bel
-
-
-    def log_reg_predictive_density(self, eta, y, X, bel):
-        bel = self.predict_bel(eta, bel)
-        log_p_pred = self.log_predictive_density(y, X, bel)
-        return log_p_pred
-        gamma = jax.nn.sigmoid(eta)
-        log_p_prior = distrax.Beta(self.a, self.b).log_prob(gamma)
-        return log_p_pred + log_p_prior
-
-
-    def step(self, y, X, bel):
-        grad_log_predict_density = jax.grad(self.log_reg_predictive_density, argnums=0)
-
-        opt_state = self.optimizer.init(bel.eta)
-        def _inner_pred(i, state):
-            bel, opt = state
-            eta = bel.eta
-            grad = grad_log_predict_density(eta, y, X, bel)
-            # updates, opt = self.optimizer.update(grad, opt, eta)
-            # eta = optax.apply_updates(eta, updates)
-            eta = eta + self.ebayes_lr * grad
-            eta = eta * (eta > 0) # hard threshold
-            bel = bel.replace(eta=eta)
-            return bel, opt
-
-        bel, _ = jax.lax.fori_loop(0, self.n_inner, _inner_pred, (bel, opt_state))
         bel = self.predict_bel(bel.eta, bel)
         bel = self.update_bel(y, X, bel)
         return bel
@@ -812,73 +737,6 @@ class LinearModelABOCD(CovarianceResetRunlenght):
         mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
 
         bel = bel.replace(mean=mean_posterior, cov=cov_posterior)
-        return bel
-
-
-class LinearModelKFA(EmpiricalBayesAdaptive):
-    def __init__(self, n_inner, ebayes_lr, beta, state_drift, deflate_mean=True):
-        super().__init__(n_inner, ebayes_lr, state_drift, deflate_mean)
-        self.beta = 1/beta # variance to precision
-
-    def init_bel(self, mean, cov, eta=0.0):
-        """
-        Initialize belief state
-        """
-        bel = states.GammaFilterState(
-            mean=mean,
-            cov=cov,
-            eta=eta
-        )
-        return bel
-
-
-    def log_predictive_density(self, y, X, bel):
-        # bel = self.predict_bel(eta, bel)
-        mean = bel.mean @ X
-        cov = X.T @ bel.cov @ X + self.beta
-        log_p_pred = distrax.Normal(mean, cov).log_prob(y)
-        return log_p_pred
-
-
-    def update_bel(self, y, X, bel):
-        Kt = bel.cov @ X / (X.T @ bel.cov @ X + self.beta)
-
-        mean = bel.mean + Kt * (y - X.T @ bel.mean)
-        cov = bel.cov - Kt * X.T @ bel.cov
-        bel = bel.replace(mean=mean, cov=cov)
-        return bel
-
-
-class LinearModelKFBA(KalmanFilterBetaAdaptiveDynamics):
-    def __init__(self, n_inner, ebayes_lr, beta, state_drift, a, b):
-        super().__init__(n_inner, ebayes_lr, a, b, state_drift)
-        self.beta = 1/beta # variance to precision
-
-    def init_bel(self, mean, cov, eta=0.0):
-        """
-        Initialize belief state
-        """
-        bel = states.GammaFilterState(
-            mean=mean,
-            cov=cov,
-            eta=eta
-        )
-        return bel
-
-
-    def log_predictive_density(self, y, X, bel):
-        mean = bel.mean @ X
-        cov = X.T @ bel.cov @ X + self.beta
-        log_p_pred = distrax.Normal(mean, cov).log_prob(y)
-        return log_p_pred
-
-
-    def update_bel(self, y, X, bel):
-        Kt = bel.cov @ X / (X.T @ bel.cov @ X + self.beta)
-
-        mean = bel.mean + Kt * (y - X.T @ bel.mean)
-        cov = bel.cov - Kt * X.T @ bel.cov
-        bel = bel.replace(mean=mean, cov=cov)
         return bel
 
 
@@ -1044,7 +902,7 @@ class ExpfamFBOCD(SoftBayesianOnlineChangepoint):
     Low-memory Kalman-filter BOCD
     """
     def __init__(
-        self, p_change, K, filter, shock
+        self, p_change, K, shock, filter,
     ):
         super().__init__(p_change, K, shock)
         self.filter = filter
@@ -1131,38 +989,10 @@ class LoFiExpfamFBOCD(SoftBayesianOnlineChangepoint):
 
 
 class ExpfamEBA(EmpiricalBayesAdaptive):
-    def __init__(self, n_inner, ebayes_lr, state_drift, filter, deflate_mean=True):
-        super().__init__(n_inner, ebayes_lr, state_drift, deflate_mean)
-        self.filter = filter
-
-    def init_bel(self, mean, cov, eta=0.0):
-        """
-        Initialize belief state
-        """
-        state_filter = self.filter.init_bel(mean, cov)
-        mean = state_filter.mean
-        cov = state_filter.cov
-
-        bel = states.GammaFilterState(
-            mean=mean,
-            cov=cov,
-            eta=eta
-        )
-        return bel
-
-    def log_predictive_density(self, y, X, bel):
-        return self.filter.log_predictive_density(y, X, bel)
-
-    def update_bel(self, y, X, bel):
-        bel_pred = self.filter._predict(bel)
-        bel = self.filter._update(bel_pred, y, X)
-        return bel
-
-
-class ExpfamKFAQ(KalmanFilterBetaAdaptiveDynamics):
-    def __init__(self, n_inner, ebayes_lr, a, b, state_drift, filter, deflate_mean=True):
-        # super().__init__(n_inner, ebayes_lr, a, b, state_drift, deflate_mean)
-        super().__init__(n_inner, ebayes_lr, a, b, state_drift)
+    def __init__(
+        self, n_inner, ebayes_lr, state_drift,  deflate_mean, deflate_covariance, filter
+    ):
+        super().__init__(n_inner, ebayes_lr, state_drift, deflate_mean, deflate_covariance)
         self.filter = filter
 
     def init_bel(self, mean, cov, eta=0.0):
