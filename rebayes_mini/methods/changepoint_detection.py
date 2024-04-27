@@ -274,9 +274,10 @@ class BayesianOnlineChangepoint(ABC):
 
 
 class SoftBayesianOnlineChangepoint(BayesianOnlineChangepoint):
-    def __init__(self, p_change, K, shock):
+    def __init__(self, p_change, K, shock, deflate_mean):
         super().__init__(p_change, K)
         self.shock = shock
+        self.deflate_mean = deflate_mean * 1.0
 
     def update_log_joint(self, y, X, bel, bel_prior):
         log_joint_reset = self.update_log_joint_reset(y, X, bel, bel_prior)
@@ -295,7 +296,9 @@ class SoftBayesianOnlineChangepoint(BayesianOnlineChangepoint):
     def deflate_belief(self, bel, bel_prior):
         gamma = jnp.exp(bel.log_posterior)
         dim = bel.mean.shape[0]
-        new_mean = bel.mean * gamma
+        deflate_mean = gamma ** self.deflate_mean
+
+        new_mean = bel.mean * deflate_mean
         new_cov = bel.cov * gamma ** 2 + (1 - gamma ** 2) * jnp.eye(dim) * self.shock
         bel = bel.replace(mean=new_mean, cov=new_cov)
         return bel
@@ -445,19 +448,20 @@ class CovarianceResetRunlenght(BayesianOnlineChangepoint):
         super().__init__(p_change, K)
         self.shock = shock
 
-    def step(self, y, X, bel, _, callback_fn):
+    def step(self, y, X, bel, bel_prior, callback_fn):
         """
         Update belief state and log-joint for a single observation
         """
         ix_max = jnp.nanargmax(bel.log_joint)
         bel_prior = jax.tree.map(lambda x: x[ix_max], bel)
         dim = bel_prior.mean.shape[0]
-        new_cov = jax.lax.cond(self.shock > 0, lambda S: jnp.eye(dim) / self.shock, lambda S: _.cov, bel_prior.cov)
-        new_mean = bel_prior.mean# / jnp.sqrt(jnp.linalg.norm(bel_prior.mean))
+        new_cov = jnp.eye(dim) / self.shock
+        new_mean = bel_prior.mean
         bel_prior = bel_prior.replace(
             mean=new_mean,
             cov=new_cov,
-            log_joint=_.log_joint, runlength=_.runlength
+            log_joint=bel_prior.log_joint,
+            runlength=bel_prior.runlength
         )
 
         log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
@@ -665,60 +669,6 @@ class EmpiricalBayesAdaptive(ABC):
         return bel, hist
 
 
-class LinearModelABOCD(CovarianceResetRunlenght):
-    def __init__(self, p_change, K, shock, beta):
-        super().__init__(p_change, K, shock)
-        self.beta = beta
-
-
-    def init_bel(self, mean, cov, log_joint_init):
-        """
-        Initialize belief state
-        """
-        d, *_ = mean.shape
-        bel = states.BOCDGaussState(
-            mean=jnp.zeros((self.K, d)),
-            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
-            log_joint=jnp.ones((self.K,)) * -jnp.inf,
-            runlength=jnp.zeros(self.K),
-        )
-
-        bel_init = states.BOCDGaussState(
-            mean=mean,
-            cov=cov,
-            log_joint=log_joint_init,
-            runlength=jnp.array(0),
-        )
-
-        bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
-
-        return bel
-
-    @partial(jax.jit, static_argnums=(0,))
-    def log_predictive_density(self, y, X, bel):
-        """
-        Compute log-posterior predictive for a Gaussian with known variance
-        """
-        mean = bel.mean @ X
-        scale = 1 / self.beta + X @  bel.cov @ X
-        log_p_pred = distrax.Normal(mean, scale).log_prob(y)
-        return log_p_pred
-
-
-    def update_bel(self, y, X, bel):
-        cov_previous = bel.cov
-        mean_previous = bel.mean
-
-        prec_previous = jnp.linalg.inv(cov_previous)
-
-        prec_posterior = prec_previous + self.beta * jnp.outer(X, X)
-        cov_posterior = jnp.linalg.inv(prec_posterior)
-        mean_posterior = cov_posterior @ (prec_previous @ mean_previous + self.beta * X * y)
-
-        bel = bel.replace(mean=mean_posterior, cov=cov_posterior)
-        return bel
-
-
 class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
     """
     Full-memory Bayesian Online Changepoint Detection for linear model
@@ -883,9 +833,9 @@ class ExpfamRLSC(SoftBayesianOnlineChangepoint):
     as the hypothesis with highest density is not a changepoint (k=0)
     """
     def __init__(
-        self, p_change, K, shock, filter,
+        self, p_change, K, shock, deflate_mean, filter,
     ):
-        super().__init__(p_change, K, shock)
+        super().__init__(p_change, K, shock, deflate_mean)
         self.filter = filter
 
     def log_predictive_density(self, y, X, bel):
@@ -907,23 +857,47 @@ class ExpfamRLSC(SoftBayesianOnlineChangepoint):
         bel = states.ABOCDGaussState(
             mean=einops.repeat(mean, "i -> k i", k=self.K),
             cov=einops.repeat(cov, "i j -> k i j", k=self.K),
-            log_joint=jnp.ones((self.K,)) * -jnp.inf,
+            log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(log_joint_init),
             runlength=jnp.zeros(self.K),
             log_posterior=jnp.zeros(self.K),
         )
 
-        bel_init = states.ABOCDGaussState(
-            mean=mean,
-            cov=cov,
-            log_joint=log_joint_init,
-            runlength=jnp.array(0),
-            log_posterior=jnp.array(0),
-        )
+        return bel
 
-        bel = jax.tree.map(lambda param_hist, param: param_hist.at[0].set(param), bel, bel_init)
+
+class ExpfamRLCR(CovarianceResetRunlenght):
+    """
+    Runlength with covariance reset.
+    """
+    def __init__(self, p_change, K, shock, filter):
+        super().__init__(p_change, K, shock)
+        self.filter = filter
+
+    def init_bel(self, mean, cov, log_joint_init):
+        """
+        Initialize belief state
+        """
+        state_filter = self.filter.init_bel(mean, cov)
+        mean = state_filter.mean
+        cov = state_filter.cov
+
+        bel = states.BOCDGaussState(
+            mean=einops.repeat(mean, "i -> k i", k=self.K),
+            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
+            log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(log_joint_init),
+            runlength=jnp.zeros(self.K),
+        )
 
         return bel
 
+    def log_predictive_density(self, y, X, bel):
+        return self.filter.log_predictive_density(y, X, bel)
+
+    def update_bel(self, y, X, bel):
+        bel_pred = self.filter._predict(bel)
+        bel = self.filter._update(bel_pred, y, X)
+        return bel
+        
 
 class ExpfamEBA(EmpiricalBayesAdaptive):
     def __init__(
