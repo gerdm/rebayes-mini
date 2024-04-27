@@ -944,50 +944,6 @@ class ExpfamFBOCD(SoftBayesianOnlineChangepoint):
         return bel
 
 
-class LoFiExpfamFBOCD(SoftBayesianOnlineChangepoint):
-    """
-    Low-memory Kalman-filter BOCD
-    """
-    def __init__(
-        self, p_change, K, filter, shock
-    ):
-        super().__init__(p_change, K, shock)
-        self.filter = filter
-
-    def deflate_belief(self, bel, bel_prior):
-        gamma = jnp.exp(bel.log_posterior)
-        new_mean = bel.mean * gamma
-        new_diagonal = bel_prior.diagonal * (1 - gamma) * self.shock + bel.diagonal * gamma
-        low_rank = bel_prior.low_rank * (1 - gamma) + bel.low_rank * gamma
-        bel = bel.replace(mean=new_mean, diagonal=new_diagonal, low_rank=low_rank)
-        return bel
-
-    def log_predictive_density(self, y, X, bel):
-        return self.filter.log_predictive_density(y, X, bel)
-
-    def update_bel(self, y, X, bel):
-        # bel = self.filter._predict(bel)
-        bel = self.filter._update(bel, y, X)
-        return bel
-
-    def init_bel(self, mean, cov=1.0):
-        state_filter = self.filter.init_bel(mean, cov)
-        mean = state_filter.mean
-        diagonal = state_filter.diagonal
-        low_rank = state_filter.low_rank
-
-        bel = states.ABOCDLoFiState(
-            mean=einops.repeat(mean, "i -> k i", k=self.K),
-            diagonal=einops.repeat(diagonal, "i -> k i", k=self.K),
-            low_rank=einops.repeat(low_rank, "i j -> k i j", k=self.K),
-            log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(0.0),
-            runlength=jnp.zeros(self.K),
-            log_posterior=jnp.zeros(self.K),
-        )
-
-        return bel
-
-
 class ExpfamEBA(EmpiricalBayesAdaptive):
     def __init__(
         self, n_inner, ebayes_lr, state_drift,  deflate_mean, deflate_covariance, filter
@@ -1060,3 +1016,47 @@ class RobustLinearModelFMBOCD(LinearModelFMBOCD):
         scale = 1 / (self.beta * Wt ** 2) + X @ bel.cov @ X
         log_p_pred = distrax.Normal(mean, scale).log_prob(y)
         return log_p_pred
+
+
+class LoFiExpfamFBOCD(SoftBayesianOnlineChangepoint):
+    """
+    Low-memory Kalman-filter BOCD
+    """
+    def __init__(
+        self, p_change, K, filter, shock
+    ):
+        super().__init__(p_change, K, shock)
+        self.filter = filter
+
+    def deflate_belief(self, bel, bel_prior):
+        gamma = jnp.exp(bel.log_posterior)
+        new_mean = bel.mean * gamma
+        new_diagonal = bel_prior.diagonal * (1 - gamma) * self.shock + bel.diagonal * gamma
+        low_rank = bel_prior.low_rank * (1 - gamma) + bel.low_rank * gamma
+        bel = bel.replace(mean=new_mean, diagonal=new_diagonal, low_rank=low_rank)
+        return bel
+
+    def log_predictive_density(self, y, X, bel):
+        return self.filter.log_predictive_density(y, X, bel)
+
+    def update_bel(self, y, X, bel):
+        # bel = self.filter._predict(bel)
+        bel = self.filter._update(bel, y, X)
+        return bel
+
+    def init_bel(self, mean, cov=1.0):
+        state_filter = self.filter.init_bel(mean, cov)
+        mean = state_filter.mean
+        diagonal = state_filter.diagonal
+        low_rank = state_filter.low_rank
+
+        bel = states.ABOCDLoFiState(
+            mean=einops.repeat(mean, "i -> k i", k=self.K),
+            diagonal=einops.repeat(diagonal, "i -> k i", k=self.K),
+            low_rank=einops.repeat(low_rank, "i j -> k i j", k=self.K),
+            log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(0.0),
+            runlength=jnp.zeros(self.K),
+            log_posterior=jnp.zeros(self.K),
+        )
+
+        return bel
