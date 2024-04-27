@@ -294,41 +294,20 @@ class SoftBayesianOnlineChangepoint(BayesianOnlineChangepoint):
 
     def deflate_belief(self, bel, bel_prior):
         gamma = jnp.exp(bel.log_posterior)
+        dim = bel.mean.shape[0]
         new_mean = bel.mean * gamma
-        new_cov = bel.cov * gamma ** 2 + bel_prior.cov * (1 - gamma ** 2) * self.shock
-        # new_cov = bel_prior.cov ** 2 * (1 - gamma) * self.shock + bel.cov * gamma ** 2
+        new_cov = bel.cov * gamma ** 2 + (1 - gamma ** 2) * jnp.eye(dim) * self.shock
         bel = bel.replace(mean=new_mean, cov=new_cov)
         return bel
 
 
-    def step(self, y, X, bel, _, callback_fn):
+    def step(self, y, X, bel, bel_prior, callback_fn):
         """
         Update belief state and log-joint for a single observation
         """
-        ix_max = jnp.nanargmax(bel.log_joint)
-        bel_prior = jax.tree.map(lambda x: x[ix_max], bel)
-        m, ix0 = jax.lax.top_k(-bel.runlength, k=1)
-        prunlength = jnp.exp(bel.log_joint[ix0] - jax.nn.logsumexp(bel.log_joint))
-        # new_cov = _.cov * prunlength + (1 - prunlength) * bel_prior.cov
-        # new_cov = jax.lax.cond(self.shock > 0, lambda S: jnp.eye(dim) / self.shock, lambda S: _.cov, bel_prior.cov)
-        # new_mean = bel_prior.mean * prunlength # / jnp.sqrt(jnp.linalg.norm(bel_prior.mean))
-        # gamma = jnp.exp(bel.log_posterior)[ix0] # 'certainty' of a changepoint
-        # new_mean = bel_prior.mean * (1 - gamma)
-        # new_cov = _.cov * gamma * self.shock + bel_prior.cov * (1 - gamma)
-        ### Alternative updaate ###
-        # new_cov = _.cov
-        # new_mean = _.mean
-        # bel_prior = bel_prior.replace(
-        #     mean=new_mean,
-        #     cov=new_cov,
-        #     log_joint=_.log_joint,
-        #     runlength=_.runlength,
-        #     log_posterior=bel_prior.log_posterior,
-        # )
-        bel_prior = _.replace(log_posterior=bel_prior.log_posterior)
 
         log_posterior, log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
-        bel_posterior = jax.vmap(self.deflate_belief, in_axes=(0, None))(bel, _)
+        bel_posterior = jax.vmap(self.deflate_belief, in_axes=(0, None))(bel, bel_prior)
         bel_posterior = self.update_bel_indices(y, X, bel_posterior, bel_prior, top_indices)
 
         bel_posterior = self.update_runlengths(bel_posterior, top_indices)
@@ -474,7 +453,7 @@ class CovarianceResetRunlenght(BayesianOnlineChangepoint):
         bel_prior = jax.tree.map(lambda x: x[ix_max], bel)
         dim = bel_prior.mean.shape[0]
         new_cov = jax.lax.cond(self.shock > 0, lambda S: jnp.eye(dim) / self.shock, lambda S: _.cov, bel_prior.cov)
-        new_mean = bel_prior.mean / jnp.sqrt(jnp.linalg.norm(bel_prior.mean))
+        new_mean = bel_prior.mean# / jnp.sqrt(jnp.linalg.norm(bel_prior.mean))
         bel_prior = bel_prior.replace(
             mean=new_mean,
             cov=new_cov,
@@ -897,9 +876,11 @@ class ExpfamBOCHD(BayesianOnlineChangepointHazardDetection):
         return bel
 
 
-class ExpfamFBOCD(SoftBayesianOnlineChangepoint):
+class ExpfamRLSC(SoftBayesianOnlineChangepoint):
     """
-    Low-memory Kalman-filter BOCD
+    Runlength with soft changepoint detection.
+    We softly revert to the prior mean / covariance, as long
+    as the hypothesis with highest density is not a changepoint (k=0)
     """
     def __init__(
         self, p_change, K, shock, filter,
