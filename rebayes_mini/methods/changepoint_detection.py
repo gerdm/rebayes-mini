@@ -174,7 +174,7 @@ class FullMemoryBayesianOnlineChangepointDetection(ABC):
         return out
 
 
-class BayesianOnlineChangepoint(ABC):
+class Runlength(ABC):
     def __init__(self, p_change, K):
         self.p_change = p_change
         self.K = K
@@ -273,7 +273,7 @@ class BayesianOnlineChangepoint(ABC):
         return bel, hist
 
 
-class SoftBayesianOnlineChangepoint(BayesianOnlineChangepoint):
+class RunlengthSoftReset(Runlength):
     def __init__(self, p_change, K, shock, deflate_mean):
         super().__init__(p_change, K)
         self.shock = shock
@@ -321,8 +321,12 @@ class SoftBayesianOnlineChangepoint(BayesianOnlineChangepoint):
         return bel_posterior, out
 
 
-class BayesianOnlineChangepointHazardDetection(ABC):
+class RunlengthChangepointCount(ABC):
     def __init__(self, K, b):
+        """
+        Bayesian online changepoint and hazard detection
+        RLCP
+        """
         self.K = K
         self.b = b
 
@@ -440,7 +444,7 @@ class BayesianOnlineChangepointHazardDetection(ABC):
         return bel, hist
 
 
-class CovarianceResetRunlenght(BayesianOnlineChangepoint):
+class RunlengthCovarianceReset(Runlength):
     def __init__(self, p_change, K, shock=0.0):
         """
         Covariance-reset runlength (CRRL)
@@ -475,10 +479,9 @@ class CovarianceResetRunlenght(BayesianOnlineChangepoint):
         return bel_posterior, out
 
 
-class BernoulliRegimeChange(ABC):
+class ChangepointLocation(ABC):
     """
-    Bernoulli regime change based on the
-    variational beam search (VBS) algorithm
+    Changepoint location detection (CPL)
     """
     def __init__(self, p_change, K, shock, inflate_prior_covariance):
         self.p_change = p_change
@@ -718,9 +721,9 @@ class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
         return log_p_pred
 
 
-class ExpfamBOCD(BayesianOnlineChangepoint):
+class ExpfamRLPR(Runlength):
     """
-    BOCD composed of ExpfamEKFs
+    Runlength prior reset (RL-PR)
     """
     def __init__(
             self, p_change, K, filter
@@ -756,7 +759,7 @@ class ExpfamBOCD(BayesianOnlineChangepoint):
         return bel
 
 
-class ExpfamBRC(BernoulliRegimeChange):
+class ExpfamCPL(ChangepointLocation):
     def __init__(
         self, p_change, K, shock, inflate_prior_covariance, filter
     ):
@@ -789,10 +792,13 @@ class ExpfamBRC(BernoulliRegimeChange):
         return bel
 
 
-class ExpfamBOCHD(BayesianOnlineChangepointHazardDetection):
+class ExpfamRLCCPR(RunlengthChangepointCount):
     def __init__(
         self, K, b, filter
     ):
+        """
+        Runlength and changepoint count with prior reset (RLCP-PR)
+        """
         super().__init__(K, b)
         self.filter = filter
     
@@ -826,11 +832,13 @@ class ExpfamBOCHD(BayesianOnlineChangepointHazardDetection):
         return bel
 
 
-class ExpfamRLSC(SoftBayesianOnlineChangepoint):
+class ExpfamRLSR(RunlengthSoftReset):
     """
-    Runlength with soft changepoint detection.
+    Runlength with soft reset (RL-SR)
     We softly revert to the prior mean / covariance, as long
     as the hypothesis with highest density is not a changepoint (k=0)
+
+    This method composes RL-SPR and RL-SCR
     """
     def __init__(
         self, p_change, K, shock, deflate_mean, filter,
@@ -865,7 +873,7 @@ class ExpfamRLSC(SoftBayesianOnlineChangepoint):
         return bel
 
 
-class ExpfamRLCR(CovarianceResetRunlenght):
+class ExpfamRLCR(RunlengthCovarianceReset):
     """
     Runlength with covariance reset.
     """
@@ -973,7 +981,7 @@ class RobustLinearModelFMBOCD(LinearModelFMBOCD):
         return log_p_pred
 
 
-class LoFiExpfamFBOCD(SoftBayesianOnlineChangepoint):
+class LoFiExpfamFBOCD(RunlengthSoftReset):
     """
     Low-memory Kalman-filter BOCD
     """
