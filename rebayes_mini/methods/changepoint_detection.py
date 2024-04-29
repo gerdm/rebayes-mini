@@ -483,11 +483,12 @@ class ChangepointLocation(ABC):
     """
     Changepoint location detection (CPL)
     """
-    def __init__(self, p_change, K, shock, inflate_prior_covariance):
+    def __init__(self, p_change, K, shock, inflate_covariance, reset_mean):
         self.p_change = p_change
         self.K = K
         self.shock = shock
-        self.inflate_prior_covariance = inflate_prior_covariance
+        self.inflate_covariance = inflate_covariance
+        self.reset_mean = reset_mean * 1.0
 
 
     @abstractmethod
@@ -510,40 +511,34 @@ class ChangepointLocation(ABC):
     def predict_cov_changepoint(self, bel):
         cov_previous = bel.cov
         dim = cov_previous.shape[0]
-        cov_if_changepoint = jax.lax.cond(
-            self.inflate_prior_covariance,
-            lambda: cov_previous / self.shock,
-            lambda: jnp.eye(dim) / self.shock,
-        )
+        cov_if_changepoint = cov_previous * self.inflate_covariance + jnp.eye(dim) * (1 - self.inflate_covariance)
+        cov_if_changepoint = cov_if_changepoint / self.shock
         return cov_if_changepoint
 
 
-    def predict_bel(self, bel, has_changepoint):
+    def predict_bel(self, bel, bel_prior, has_changepoint):
         cov_changepoint = self.predict_cov_changepoint(bel)
+        cov_pred = cov_changepoint * has_changepoint + bel.cov * (1 - has_changepoint)
+        cond_reset_mean = has_changepoint * self.reset_mean
+        mean_pred = bel_prior.mean * cond_reset_mean + bel.mean * (1 - cond_reset_mean)
 
-        cov_pred = jax.lax.cond(
-            has_changepoint,
-            lambda: cov_changepoint,
-            lambda: bel.cov,
-        )
-
-        bel = bel.replace(cov=cov_pred)
+        bel = bel.replace(mean=mean_pred, cov=cov_pred)
         return bel
 
 
-    def predict_and_update_bel(self, y, X, bel, has_changepoint):
-        bel = self.predict_bel(bel, has_changepoint)
+    def predict_and_update_bel(self, y, X, bel, bel_prior, has_changepoint):
+        bel = self.predict_bel(bel, bel_prior, has_changepoint)
         bel = self.update_bel(y, X, bel)
         bel = bel.replace(segment=bel.segment + has_changepoint)
         return bel
 
 
-    def split_and_update(self, y, X, bel):
+    def split_and_update(self, y, X, bel, bel_prior):
         """
         Update belief state and log-joint for a single observation
         """
-        bel_up = self.predict_and_update_bel(y, X, bel, has_changepoint=1.0)
-        bel_down = self.predict_and_update_bel(y, X, bel, has_changepoint=0.0)
+        bel_up = self.predict_and_update_bel(y, X, bel, bel_prior, has_changepoint=1.0)
+        bel_down = self.predict_and_update_bel(y, X, bel, bel_prior, has_changepoint=0.0)
 
         log_pp_up = self.log_predictive_density(y, X, bel_up)
         log_pp_down = self.log_predictive_density(y, X, bel_down)
@@ -568,10 +563,10 @@ class ChangepointLocation(ABC):
         return bel_combined
 
 
-    def step(self, y, X, bel):
+    def step(self, y, X, bel, bel_prior):
         # from K to 2K belief states
-        vmap_split_and_update = jax.vmap(self.split_and_update, in_axes=(None, None, 0))
-        bel = vmap_split_and_update(y, X, bel)
+        vmap_split_and_update = jax.vmap(self.split_and_update, in_axes=(None, None, 0, None))
+        bel = vmap_split_and_update(y, X, bel, bel_prior)
         bel = jax.tree.map(lambda x: einops.rearrange(x, "a b ... -> (a b) ..."), bel)
         # from 2K to K belief states — the 'beam search'
         _, top_indices = jax.lax.top_k(bel.log_weight, k=self.K)
@@ -586,9 +581,10 @@ class ChangepointLocation(ABC):
 
     def scan(self, y, X, bel, callback_fn=None):
         callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        bel_prior = jax.tree.map(lambda x: x[0], bel)
         def _step(bel, yX):
             y, X = yX
-            bel_posterior = self.step(y, X, bel)
+            bel_posterior = self.step(y, X, bel, bel_prior)
             out = callback_fn(bel_posterior, bel, y, X)
 
             return bel_posterior, out
@@ -761,9 +757,9 @@ class ExpfamRLPR(Runlength):
 
 class ExpfamCPL(ChangepointLocation):
     def __init__(
-        self, p_change, K, shock, inflate_prior_covariance, filter
+        self, p_change, K, shock, inflate_covariance, reset_mean, filter
     ):
-        super().__init__(p_change, K, shock, inflate_prior_covariance)
+        super().__init__(p_change, K, shock, inflate_covariance, reset_mean)
         self.filter = filter
 
     def log_predictive_density(self, y, X, bel):
