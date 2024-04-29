@@ -322,23 +322,22 @@ class RunlengthSoftReset(Runlength):
 
 
 class RunlengthChangepointCount(ABC):
-    def __init__(self, K, b):
+    def __init__(self, K, b, reset_mean=True):
         """
         Bayesian online changepoint and hazard detection
         RLCP
         """
         self.K = K
         self.b = b
+        self.reset_mean = reset_mean * 1.0
 
     @abstractmethod
     def init_bel(self, y, X, bel_init):
         ...
 
-
     @abstractmethod
     def log_predictive_density(self, y, X, bel):
         ...
-
 
     @abstractmethod
     def update_bel(self, y, X, bel):
@@ -346,7 +345,6 @@ class RunlengthChangepointCount(ABC):
         Update belief state (posterior)
         """
         ...
-
 
     def p_change(self, changepoints, t):
         alpha = changepoints
@@ -357,7 +355,7 @@ class RunlengthChangepointCount(ABC):
     @partial(jax.vmap, in_axes=(None, None, None, None, 0))
     def update_log_joint_increase(self, y, X, t, bel):
         log_p_pred = self.log_predictive_density(y, X, bel)
-        log_joint = log_p_pred + bel.log_joint + jnp.log(1 - self.p_change(bel.changepoints, t))
+        log_joint = log_p_pred + bel.log_joint + jnp.log1p(-self.p_change(bel.changepoints, t))
         return log_joint
 
     @partial(jax.vmap, in_axes=(None, None, None, None, 0, None))
@@ -394,7 +392,8 @@ class RunlengthChangepointCount(ABC):
     def update_bel_reset(self, y, X, bel, bel_prior):
         changepoints = bel.changepoints + 1 # increase changepoints by one
         runlengths = bel.runlength * 0
-        bel_update = bel_prior.replace(changepoints=changepoints, runlength=runlengths)
+        new_mean = bel_prior.mean * self.reset_mean + bel.mean * (1 - self.reset_mean)
+        bel_update = bel_prior.replace(mean=new_mean, changepoints=changepoints, runlength=runlengths)
         return bel_update
 
     def update_bel_batch(self, y, X, bel, bel_prior, is_changepoint):
@@ -788,14 +787,14 @@ class ExpfamCPL(ChangepointLocation):
         return bel
 
 
-class ExpfamRLCCPR(RunlengthChangepointCount):
+class ExpfamRLCC(RunlengthChangepointCount):
     def __init__(
-        self, K, b, filter
+        self, K, b, reset_mean, filter
     ):
         """
         Runlength and changepoint count with prior reset (RLCP-PR)
         """
-        super().__init__(K, b)
+        super().__init__(K, b, reset_mean)
         self.filter = filter
     
 
