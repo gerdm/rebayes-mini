@@ -679,8 +679,9 @@ class LinearModelFMBOCD(FullMemoryBayesianOnlineChangepointDetection):
         self.beta = beta
 
 
-    def init_bel(self, mean, cov, size_filter):
+    def init_bel(self, mean, cov, n_samples):
         d = mean.shape[0]
+        size_filter = n_samples * (n_samples + 1) // 2
         hist_mean = jnp.zeros((size_filter, d))
         hist_cov = jnp.zeros((size_filter, d, d))
         bel_hist = states.GaussState(
