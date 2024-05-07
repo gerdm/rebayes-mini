@@ -248,7 +248,7 @@ class RobustStFilter(ExtendedKalmanFilter):
         bel = bel.replace(mean=mean_pred, covariance=cov_pred)
         return bel
 
-    def _ekf_update_step(self, bel, observation_covariance, y, x):
+    def _ekf_update(self, bel, observation_covariance, y, x):
         Ht = self.jac_obs(bel.mean, x)
         Rt_inv = jnp.linalg.inv(observation_covariance)
         yhat = self.vobs_fn(bel.mean, x)
@@ -311,12 +311,12 @@ class RobustStFilter(ExtendedKalmanFilter):
 
         return bel
 
-    def _update_step(self, i, group, y, x, bel_pred):
+    def _update(self, i, group, y, x, bel_pred):
         bel, expected_terms = group
         expected_obs_prec, expected_weighting_term, expected_dof = expected_terms
         # Time update
         obs_cov_est = jnp.linalg.inv(expected_obs_prec) / expected_weighting_term # (11)
-        bel = self._ekf_update_step(bel, obs_cov_est, y, x)
+        bel = self._ekf_update(bel, obs_cov_est, y, x)
 
         D = self._compute_D_term(bel, bel_pred, y, x) # (31)
 
@@ -355,7 +355,7 @@ class RobustStFilter(ExtendedKalmanFilter):
     def step(self, bel, xs, callback_fn):
         xt, yt = xs
         bel_pred = self._predict_step(bel)
-        partial_update = partial(self._update_step, y=yt, x=xt, bel_pred=bel_pred)
+        partial_update = partial(self._update, y=yt, x=xt, bel_pred=bel_pred)
         expected_terms = self._compute_initial_expectations(bel_pred, bel_pred, yt, xt)
         group_init = bel_pred, expected_terms
         bel_update, _ = jax.lax.fori_loop(0, self.n_inner, partial_update, group_init)
@@ -372,7 +372,7 @@ class ExtendedKalmanFilterMD(ExtendedKalmanFilter):
         self.threshold = threshold
         self.observation_precision = jnp.linalg.inv(self.observation_covariance)
 
-    def _update_step(self, bel, y, x):
+    def _update(self, bel, y, x):
         err = y - self.vobs_fn(bel.mean, x)
         mahalanobis_distance = jnp.sqrt(jnp.einsum("j,jk,k->", err, self.observation_precision, err))
         weighting_term = (mahalanobis_distance < self.threshold).astype(float)
@@ -399,7 +399,7 @@ class ExtendedKalmanFilterIMQ(ExtendedKalmanFilter):
         self.soft_threshold = soft_threshold
 
 
-    def _update_step(self, bel, y, x):
+    def _update(self, bel, y, x):
         err = y - self.vobs_fn(bel.mean, x)
         weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
 
@@ -582,27 +582,3 @@ class FifoSGDIMQ(FifoSGD):
         _, bel = self._train_step(bel, weighting_term)
         return bel
 
-
-class RobustBernoulliFilter(BernoulliFilter):
-    def __init__(self, apply_fn, dynamics_covariance, c):
-        super().__init__(apply_fn, dynamics_covariance)
-        self.c = c
-
-    def _update_step(self, bel, y, x):
-        eta = self.link_fn(bel.mean, x).astype(float)
-        yhat = self.mean(eta)
-        y = self.suff_statistic(y)
-        err = y - yhat
-
-        weight = yhat ** y * (1 - yhat) ** (1 - y)
-        # val = y * jnp.log(yhat) + (1 - y) * jnp.log(1 - yhat)
-        # weight = (yhat ** y * (1 - yhat) ** (1 - y))
-        Rt = jnp.atleast_2d(self.covariance(eta))  / weight
-        Ht = Rt @ self.grad_link_fn(bel.mean, x)
-        St = Ht @ bel.cov @ Ht.T + Rt
-        Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
-
-        mean_update = bel.mean + Kt @ err
-        cov_update = bel.cov - Kt @ St @ Kt.T
-        bel = bel.replace(mean=mean_update, cov=cov_update)
-        return bel
