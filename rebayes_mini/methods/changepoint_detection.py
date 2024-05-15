@@ -291,7 +291,7 @@ class RunlengthSoftReset(Runlength):
         log_joint, top_indices = jax.lax.top_k(log_joint, k=self.K)
         log_posterior = log_posterior[top_indices]
         return log_posterior, log_joint, top_indices
-    
+
 
     def deflate_belief(self, bel, bel_prior):
         gamma = jnp.exp(bel.log_posterior)
@@ -444,12 +444,13 @@ class RunlengthChangepointCount(ABC):
 
 
 class RunlengthCovarianceReset(Runlength):
-    def __init__(self, p_change, K, shock=0.0):
+    def __init__(self, p_change, K, shock=0.0, shrink=1.0):
         """
         Covariance-reset runlength (CRRL)
         """
         super().__init__(p_change, K)
         self.shock = shock
+        self.shrink = shrink
 
     def step(self, y, X, bel, bel_prior, callback_fn):
         """
@@ -461,7 +462,7 @@ class RunlengthCovarianceReset(Runlength):
         new_cov = jnp.eye(dim) / self.shock
         new_mean = bel_prior.mean
         bel_prior = bel_prior.replace(
-            mean=new_mean,
+            mean=new_mean * self.shrink,
             cov=new_cov,
             log_joint=bel_prior.log_joint,
             runlength=bel_prior.runlength
@@ -482,10 +483,11 @@ class ChangepointLocation(ABC):
     """
     Changepoint location detection (CPL)
     """
-    def __init__(self, p_change, K, shock, inflate_covariance, reset_mean):
+    def __init__(self, p_change, K, shock, shrink, inflate_covariance, reset_mean):
         self.p_change = p_change
         self.K = K
-        self.shock = shock
+        self.shock = shock # shock factor for the covariance
+        self.shrink = shrink # shrinkage factor for the mean
         self.inflate_covariance = inflate_covariance
         self.reset_mean = reset_mean * 1.0
 
@@ -514,12 +516,18 @@ class ChangepointLocation(ABC):
         cov_if_changepoint = cov_if_changepoint / self.shock
         return cov_if_changepoint
 
+    def predict_mean_changepoint(self, bel, bel_prior):
+        mean_previous = bel.mean
+        mean_if_changepoint = mean_previous * self.shrink * (1 - self.reset_mean) + bel_prior.mean * self.reset_mean
+        return mean_if_changepoint
+
 
     def predict_bel(self, bel, bel_prior, has_changepoint):
-        cov_changepoint = self.predict_cov_changepoint(bel)
-        cov_pred = cov_changepoint * has_changepoint + bel.cov * (1 - has_changepoint)
-        cond_reset_mean = has_changepoint * self.reset_mean
-        mean_pred = bel_prior.mean * cond_reset_mean + bel.mean * (1 - cond_reset_mean)
+        cov_if_changepoint = self.predict_cov_changepoint(bel)
+        cov_pred = cov_if_changepoint * has_changepoint + bel.cov * (1 - has_changepoint)
+
+        mean_if_changepoint = self.predict_mean_changepoint(bel, bel_prior)
+        mean_pred = mean_if_changepoint * has_changepoint + bel.mean * (1 - has_changepoint)
 
         bel = bel.replace(mean=mean_pred, cov=cov_pred)
         return bel
@@ -726,16 +734,16 @@ class ExpfamRLPR(Runlength):
     ):
         super().__init__(p_change, K)
         self.filter = filter
-    
+
     def log_predictive_density(self, y, X, bel):
         return self.filter.log_predictive_density(y, X, bel)
-    
+
 
     def update_bel(self, y, X, bel):
         bel_pred = self.filter._predict(bel)
         bel = self.filter._update(bel_pred, y, X)
         return bel
-    
+
 
     def init_bel(self, mean, cov, log_joint_init):
         """
@@ -757,14 +765,14 @@ class ExpfamRLPR(Runlength):
 
 class ExpfamCPL(ChangepointLocation):
     def __init__(
-        self, p_change, K, shock, inflate_covariance, reset_mean, filter
+        self, p_change, K, shock, inflate_covariance, reset_mean, shrink, filter
     ):
-        super().__init__(p_change, K, shock, inflate_covariance, reset_mean)
+        super().__init__(p_change, K, shock, shrink, inflate_covariance, reset_mean)
         self.filter = filter
 
     def log_predictive_density(self, y, X, bel):
         return self.filter.log_predictive_density(y, X, bel)
-    
+
 
     def update_bel(self, y, X, bel):
         bel = self.filter._predict(bel)
@@ -797,7 +805,7 @@ class ExpfamRLCC(RunlengthChangepointCount):
         """
         super().__init__(K, b, reset_mean)
         self.filter = filter
-    
+
 
     def init_bel(self, mean, cov, log_weight):
         """
@@ -817,10 +825,10 @@ class ExpfamRLCC(RunlengthChangepointCount):
 
         return bel
 
-    
+
     def log_predictive_density(self, y, X, bel):
         return self.filter.log_predictive_density(y, X, bel)
-    
+
 
     def update_bel(self, y, X, bel):
         bel_pred = self.filter._predict(bel)
@@ -873,8 +881,8 @@ class ExpfamRLCR(RunlengthCovarianceReset):
     """
     Runlength with covariance reset.
     """
-    def __init__(self, p_change, K, shock, filter):
-        super().__init__(p_change, K, shock)
+    def __init__(self, p_change, K, shock, shrink, filter):
+        super().__init__(p_change, K, shock, shrink)
         self.filter = filter
 
     def init_bel(self, mean, cov, log_joint_init):
@@ -901,7 +909,7 @@ class ExpfamRLCR(RunlengthCovarianceReset):
         bel_pred = self.filter._predict(bel)
         bel = self.filter._update(bel_pred, y, X)
         return bel
-        
+
 
 class ExpfamEBA(EmpiricalBayesAdaptive):
     def __init__(
@@ -939,7 +947,7 @@ class RobustLinearModelFMBOCD(LinearModelFMBOCD):
     def __init__(self, p_change, beta, c):
         super().__init__(p_change, beta)
         self.c = c
-    
+
 
     def imq_kernel(self, residual):
         """
@@ -963,7 +971,7 @@ class RobustLinearModelFMBOCD(LinearModelFMBOCD):
 
         bel = states.GaussState(mean=mean_posterior, cov=cov_posterior)
         return bel
-    
+
     def log_predictive_density(self, y, X, bel):
         """
         Compute log-posterior predictive for a Gaussian with known variance
