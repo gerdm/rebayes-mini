@@ -221,7 +221,9 @@ class ExpfamFilter:
         Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
 
         mean_update = bel.mean + Kt @ err
-        cov_update = bel.cov - Kt @ St @ Kt.T
+        # cov_update = bel.cov - Kt @ St @ Kt.T
+        I = jnp.eye(len(bel.mean))
+        cov_update = (I - Kt @ Ht) @ bel.cov @ (I - Kt @ Ht).T + Kt @ Rt @ Kt.T
         bel = bel.replace(mean=mean_update, cov=cov_update)
         return bel
 
