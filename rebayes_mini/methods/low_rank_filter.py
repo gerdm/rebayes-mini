@@ -113,16 +113,18 @@ class ExpfamFilter(kf.ExpfamFilter):
         low_rank_hat = jnp.concatenate([bel_pred.low_rank, memory_entry], axis=1)
         Gt = jnp.linalg.pinv(
             jnp.eye(self.rank + n_out) + 
-            jnp.einsum("ji,j,jk->ik", low_rank_hat, bel_pred.diagonal, low_rank_hat)
+            jnp.einsum("ji,j,jk->ik", low_rank_hat, 1 / bel_pred.diagonal, low_rank_hat)
         )
         Ct = Ht.T @ At.T @ At
 
         # Kalman gain
         K1 = jnp.einsum("i,ij->ij", 1 / bel_pred.diagonal, Ct)
         K2 = jnp.einsum(
-            "i,ij,jk,lk,lm->im",
-            1 / bel_pred.diagonal ** 2, low_rank_hat, Gt,
-            low_rank_hat, Ct
+            "i,ij,jk,lk,lm,m->im",
+            1 / bel_pred.diagonal,
+            low_rank_hat, Gt,
+            low_rank_hat, Ct,
+            1 / bel_pred.diagonal
         )
         Kt = K1 - K2
         
