@@ -62,3 +62,10 @@ class ABOCDLoFiState:
     log_joint: chex.Array
     runlength: chex.Array
     log_posterior: chex.Array
+
+
+@chex.dataclass
+class MixtureGaussState:
+    means: chex.Array
+    covs: chex.Array
+    log_weights: chex.Array

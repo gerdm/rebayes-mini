@@ -174,6 +174,62 @@ class FullMemoryBayesianOnlineChangepointDetection(ABC):
         return out
 
 
+class Mixture(ABC):
+    """
+    Abélès, Baptiste, Joseph de Vilmarest, and Olivier Wintemberger.
+    "Adaptive time series forecasting with markovian variance switching.
+    arXiv preprint arXiv:2402.14684 (2024).
+    """
+    def __init__(self, n_experts, eta, ):
+        self.n_experts = n_experts
+        self.eta = eta
+        raise NotImplementedError("This class is not implemented yet")
+    
+    def _define_transition_matrix(self, alpha):
+        """
+        Transition matrix for the experts
+        """
+        transition_matrix = jnp.ones((self.n_experts, self.n_experts)) * alpha / (self.n_experts - 1)
+        # insert 1 - alpha in the diagonal
+        transition_matrix = transition_matrix.at[jnp.diag_indices(self.n_experts)].set(1 - alpha)
+        log_transition_matrix = jnp.log(transition_matrix)
+        return log_transition_matrix
+    
+    @abstractmethod
+    def lossfn(self, y, X, bel):
+        ...
+    
+    @abstractmethod
+    def init_bel(self, y, X, bel_init):
+        ...
+    
+    @abstractmethod
+    def predict_bel(self, bel):
+        ...
+    
+    @abstractmethod
+    def update_bel(self, y, X, bel):
+        ...
+    
+    def predict_and_update_weight(self, y, X, bel):
+        # could be a negative log-predictive density
+        losses = jax.vmap(self.lossfn, in_axes=(None, None, 0))(y, X, bel)     
+        log_weights_new = bel.log_weights -self.eta * losses
+        log_weights_new = log_weights_new - jax.nn.logsumexp(log_weights_new)
+        # progate according to the transition matrix
+        log_weights_new = self.log_transition_matrix  + log_weights_new[:, None]
+        log_weights_new = jax.nn.logsumexp(log_weights_new, axis=0)
+        return log_weights_new
+
+
+    def step(self, y, X, bel, callback_fn):
+        bel_pred = jax.vmap(self.predict_bel)(bel)
+        bel_update = self.predict_and_update_weight(y, X, bel_pred)
+        bel_update = self.update_bel(y, X, bel_update)
+        out = callback_fn(bel, y, X)
+        return bel, out
+
+
 class Runlength(ABC):
     def __init__(self, p_change, K):
         self.p_change = p_change
