@@ -204,7 +204,7 @@ class Mixture(ABC):
         ...
     
     @abstractmethod
-    def predict_bel(self, bel):
+    def predict_bel(self, bel, factor):
         ...
     
     @abstractmethod
@@ -219,15 +219,33 @@ class Mixture(ABC):
         # progate according to the transition matrix
         log_weights_new = self.log_transition_matrix  + log_weights_new[:, None]
         log_weights_new = jax.nn.logsumexp(log_weights_new, axis=0)
-        return log_weights_new
+        return bel
 
 
-    def step(self, y, X, bel, callback_fn):
-        bel_pred = jax.vmap(self.predict_bel)(bel)
-        bel_update = self.predict_and_update_weight(y, X, bel_pred)
-        bel_update = self.update_bel(y, X, bel_update)
-        out = callback_fn(bel, y, X)
-        return bel, out
+    def step(self, y, X, key, bel, callback_fn):
+        bel_pred = jax.vmap(self.predict_bel, in_axes=(None, 0))(bel, bel.factors)
+        log_weights = self.predict_and_update_weight(y, X, bel_pred)
+        # choose a random factor according to the weights
+        ix = jax.random.categorical(key, log_weights)
+        factor = bel_pred.factors[ix]
+        # predict with the chosen factor
+        bel_posterior = self.predict_bel(bel, factor)
+        bel_posterior = self.update_bel(y, X, bel_posterior)
+        out = callback_fn(bel_posterior, bel, y, X)
+
+        return bel_posterior, out
+    
+    def scan(self, y, X, key, bel, callback_fn):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        def _step(bel, tyX):
+            t, y, X = tyX
+            keyt = jax.random.fold_in(key, t)
+            bel_posterior, out = self.step(y, X, keyt, bel, callback_fn)
+            return bel_posterior, out
+        timesteps = jnp.arange(y.shape[0])
+        collection = (timesteps, y, X)
+        bel, hist = jax.lax.scan(_step, bel, collection)
+        return hist
 
 
 class Runlength(ABC):
