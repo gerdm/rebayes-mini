@@ -174,13 +174,13 @@ class FullMemoryBayesianOnlineChangepointDetection(ABC):
         return out
 
 
-class Mixture(ABC):
+class MixtureExperts(ABC):
     """
     Abélès, Baptiste, Joseph de Vilmarest, and Olivier Wintemberger.
     "Adaptive time series forecasting with markovian variance switching.
     arXiv preprint arXiv:2402.14684 (2024).
     """
-    def __init__(self, n_experts, eta, ):
+    def __init__(self, n_experts, eta):
         self.n_experts = n_experts
         self.eta = eta
         raise NotImplementedError("This class is not implemented yet")
@@ -1013,6 +1013,48 @@ class ExpfamEBA(EmpiricalBayesAdaptive):
     def update_bel(self, y, X, bel):
         bel_pred = self.filter._predict(bel)
         bel = self.filter._update(bel_pred, y, X)
+        return bel
+
+
+class ExpfamMEACI(MixtureExperts):
+    """
+    Mixture of experts with adaptive covariance inflation
+    """
+    def __init__(self, n_experts, eta, filter):
+        super().__init__(n_experts, eta)
+        self.filter = filter
+    
+    def init_bel(self, bel, factors):
+        """
+        Initialize belief state.
+        Here, factors are the dynamics covariance inflation factor
+        for each expert.
+        """
+        bel = states.MixtureExpertsGaussState(
+            mean=bel.mean,
+            cov=bel.cov,
+            factors=factors,
+            log_weights=jnp.zeros(self.n_experts)
+        )
+        return bel
+    
+    def lossfn(self, y, X, bel):
+        return -self.filter.log_predictive_density(y, X, bel)
+
+    def predict_bel(self, bel, factor):
+        """
+        Predict bel in an ACI manner
+        """
+        nparams = len(bel.mean)
+        I = jnp.eye(nparams)
+        pmean_pred = bel.mean
+        pcov_pred = bel.cov + factor * I
+        bel = bel.replace(mean=pmean_pred, cov=pcov_pred)
+        return bel
+    
+
+    def update_bel(self, y, X, bel):
+        bel = self.filter._update(bel, y, X)
         return bel
 
 

@@ -65,7 +65,7 @@ class ABOCDLoFiState:
 
 
 @chex.dataclass
-class MixtureGaussState:
+class MixtureExpertsGaussState:
     mean: chex.Array
     cov: chex.Array
     factors: chex.Array
