@@ -180,10 +180,10 @@ class MixtureExperts(ABC):
     "Adaptive time series forecasting with markovian variance switching.
     arXiv preprint arXiv:2402.14684 (2024).
     """
-    def __init__(self, n_experts, eta):
+    def __init__(self, n_experts, eta, alpha):
         self.n_experts = n_experts
         self.eta = eta
-        raise NotImplementedError("This class is not implemented yet")
+        self.log_transition_matrix = self._define_transition_matrix(alpha)
     
     def _define_transition_matrix(self, alpha):
         """
@@ -211,26 +211,28 @@ class MixtureExperts(ABC):
     def update_bel(self, y, X, bel):
         ...
     
-    def predict_and_update_weight(self, y, X, bel):
+    def predict_and_update_weight(self, y, X, bels_pred, bel):
         # could be a negative log-predictive density
-        losses = jax.vmap(self.lossfn, in_axes=(None, None, 0))(y, X, bel)     
+        losses = jax.vmap(self.lossfn, in_axes=(None, None, 0))(y, X, bels_pred)
         log_weights_new = bel.log_weights -self.eta * losses
         log_weights_new = log_weights_new - jax.nn.logsumexp(log_weights_new)
         # progate according to the transition matrix
-        log_weights_new = self.log_transition_matrix  + log_weights_new[:, None]
+        log_weights_new = self.log_transition_matrix + log_weights_new[:, None]
         log_weights_new = jax.nn.logsumexp(log_weights_new, axis=0)
-        return bel
+        return log_weights_new
 
 
     def step(self, y, X, key, bel, callback_fn):
         bel_pred = jax.vmap(self.predict_bel, in_axes=(None, 0))(bel, bel.factors)
-        log_weights = self.predict_and_update_weight(y, X, bel_pred)
+        log_weights = self.predict_and_update_weight(y, X, bel_pred, bel)
         # choose a random factor according to the weights
         ix = jax.random.categorical(key, log_weights)
-        factor = bel_pred.factors[ix]
+        # factor = bel.factors[ix]
+        factor = (bel.factors * jnp.exp(log_weights)).sum(axis=0)
         # predict with the chosen factor
         bel_posterior = self.predict_bel(bel, factor)
         bel_posterior = self.update_bel(y, X, bel_posterior)
+        bel_posterior = bel_posterior.replace(log_weights=log_weights)
         out = callback_fn(bel_posterior, bel, y, X)
 
         return bel_posterior, out
@@ -242,10 +244,10 @@ class MixtureExperts(ABC):
             keyt = jax.random.fold_in(key, t)
             bel_posterior, out = self.step(y, X, keyt, bel, callback_fn)
             return bel_posterior, out
-        timesteps = jnp.arange(y.shape[0])
+        timesteps = jnp.arange(len(y))
         collection = (timesteps, y, X)
         bel, hist = jax.lax.scan(_step, bel, collection)
-        return hist
+        return bel, hist
 
 
 class Runlength(ABC):
@@ -1020,21 +1022,21 @@ class ExpfamMEACI(MixtureExperts):
     """
     Mixture of experts with adaptive covariance inflation
     """
-    def __init__(self, n_experts, eta, filter):
-        super().__init__(n_experts, eta)
+    def __init__(self, n_experts, eta, alpha, filter):
+        super().__init__(n_experts, eta, alpha)
         self.filter = filter
     
-    def init_bel(self, bel, factors):
+    def init_bel(self, mean, cov, factors):
         """
         Initialize belief state.
         Here, factors are the dynamics covariance inflation factor
         for each expert.
         """
         bel = states.MixtureExpertsGaussState(
-            mean=bel.mean,
-            cov=bel.cov,
+            mean=mean,
+            cov=cov,
             factors=factors,
-            log_weights=jnp.zeros(self.n_experts)
+            log_weights=jnp.log(jnp.ones(self.n_experts) / self.n_experts),
         )
         return bel
     
