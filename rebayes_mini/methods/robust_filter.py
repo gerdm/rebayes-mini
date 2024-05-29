@@ -155,7 +155,7 @@ class ExtendedKalmanFilterInverseWishart(ExtendedKalmanFilter):
 
     def step(self, bel, xs, callback_fn):
         x, y = xs
-        bel_pred = super()._predict_step(bel)
+        bel_pred = super()._predict(bel)
         partial_update = partial(self._update, bel_pred=bel_pred, x=x, y=y)
         bel_update = jax.lax.fori_loop(0, self.n_inner, partial_update, bel_pred)
         output = callback_fn(bel_update, bel_pred, y, x)
