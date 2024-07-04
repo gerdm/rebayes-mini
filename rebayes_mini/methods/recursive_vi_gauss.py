@@ -21,7 +21,7 @@ class RVGA(ABC):
     Statistics and Computing 32.1 (2022): 10.
     """
     def __init__(
-        self, apply_fn, n_inner=1, n_samples=10,
+        self, apply_fn, n_inner, n_samples,
     ):
         self.apply_fn = apply_fn
         self.n_inner = n_inner
@@ -108,8 +108,8 @@ class RVGA(ABC):
 
 
 class BernoulliRVGA(RVGA):
-    def __init__(self, apply_fn):
-        super().__init__(apply_fn)
+    def __init__(self, apply_fn, n_inner, n_samples):
+        super().__init__(apply_fn, n_inner, n_samples)
 
     def log_partition(self, eta):
         return jnp.log1p(jnp.exp(eta)).sum()
