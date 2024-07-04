@@ -2,6 +2,7 @@
 import jax
 import chex
 import jax.numpy as jnp
+from abc import ABC, abstractmethod
 from functools import partial
 from jax.flatten_util import ravel_pytree
 
@@ -11,26 +12,33 @@ class RVGAState:
     precision: chex.Array
 
 
-class RVGA:
+class RVGA(ABC):
     """
-    Recursive Variational Gaussian Approximation
-    for members of the exponential family
+    Recursive Variational Gaussian Approximation.
+
+    Lambert, Marc, Silvère Bonnabel, and Francis Bach.
+    "The recursive variational Gaussian approximation (R-VGA).
+    Statistics and Computing 32.1 (2022): 10.
     """
     def __init__(
-        self, apply_fn, log_partition, suff_statistic, n_inner=1, n_samples=10,
+        self, apply_fn, n_inner=1, n_samples=10,
     ):
         self.apply_fn = apply_fn
-        self.log_partition = log_partition
-        self.suff_statistic = suff_statistic
         self.n_inner = n_inner
         self.n_samples = n_samples
 
+    @abstractmethod
+    def log_partition(self, eta):
+        ...
+
+    @abstractmethod
+    def suff_statistic(self, y):
+        ...
 
     def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn = self._initialise_link_fn(self.apply_fn, params)
         self.grad_log_prob = jax.jacrev(self.log_probability, argnums=0)
         self.hessian_log_prob = jax.jacfwd(self.grad_log_prob, argnums=0)
-
 
         flat_params, _ = ravel_pytree(params)
         nparams = len(flat_params)
@@ -55,8 +63,8 @@ class RVGA:
         depend on the paramters
         """
         natural_parameters = self.link_fn(params, x)
-        lprob = self.suff_statistic(y).T @ natural_parameters - self.log_partition(natural_parameters)
-        return lprob.squeeze()
+        log_proba = self.suff_statistic(y).T @ natural_parameters - self.log_partition(natural_parameters)
+        return log_proba.squeeze()
 
     @partial(jax.jit, static_argnums=(0,))
     def mean(self, eta):
@@ -97,3 +105,14 @@ class RVGA:
         D = (keys, X, y)
         bel, hist = jax.lax.scan(self.step, bel, D)
         return bel, hist
+
+
+class BernoulliRVGA(RVGA):
+    def __init__(self, apply_fn):
+        super().__init__(apply_fn)
+
+    def log_partition(self, eta):
+        return jnp.log1p(jnp.exp(eta)).sum()
+
+    def suff_statistic(self, y):
+        return y
