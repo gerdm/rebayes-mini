@@ -3,6 +3,7 @@ import jax
 import chex
 import jax.numpy as jnp
 from abc import ABC, abstractmethod
+from rebayes_mini import callbacks
 from functools import partial
 from jax.flatten_util import ravel_pytree
 
@@ -90,20 +91,23 @@ class RVGA(ABC):
         return bel, None
 
     
-    def step(self, bel, xs):
+    def step(self, bel, xs, callback_fn):
         key, x, y = xs
         keys = jax.random.split(key, self.n_inner)
         _inner = partial(self._step_inner, x=x, y=y)
-        bel, _ = jax.lax.scan(_inner, bel, keys)
+        bel_update, _ = jax.lax.scan(_inner, bel, keys)
 
-        return bel, bel.mean
+        output = callback_fn(bel_update, bel, y, x)
+        return bel_update, output
 
 
-    def scan(self, key, bel, y, X):
+    def scan(self, key, bel, y, X, callback_fn=None):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
         n_timesteps = len(X)
         keys = jax.random.split(key, n_timesteps)
         D = (keys, X, y)
-        bel, hist = jax.lax.scan(self.step, bel, D)
+        _step = partial(self.step, callback_fn=callback_fn)
+        bel, hist = jax.lax.scan(_step, bel, D)
         return bel, hist
 
 
