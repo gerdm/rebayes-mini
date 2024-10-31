@@ -2,7 +2,7 @@ def get_null(bel_update, bel_prev, y, x, *args, **kwargs):
     return None
 
 
-def get_updated_mean(bel_update, bel_prev, y, x):
+def get_updated_mean(bel_update, bel_prev, y, x, *args, **kwargs):
     return bel_update.mean
 
 
