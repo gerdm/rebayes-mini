@@ -16,10 +16,29 @@ class LoFiState:
 class ExpfamFilter(kf.ExpfamFilter):
     def __init__(
         self, apply_fn, log_partition, suff_statistic, dynamics_covariance,
-        rank,
+        rank, inflate_diag=True,
     ):
+        """
+        Moment-match Low-rank Extended Kalman filter
+
+        Parameters
+        ----------
+        apply_fn: function
+            Conditional expectation for a measurement
+        log_partition: function
+            [to be deprecated]
+        suff_statistic: function
+            Sufficient statistic given an observation
+        dynamics_covariance: float
+            Additive dynamics covariance to correct for model misspecification
+        rank: int
+            Dimension of low-rank component
+        inflate_diag: bool
+            Inflate diagonal term based on unaccounted singular components
+        """
         super().__init__(apply_fn, log_partition, suff_statistic, dynamics_covariance)
         self.rank = rank
+        self.inflate_diag = inflate_diag
     
     def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
@@ -111,26 +130,28 @@ class ExpfamFilter(kf.ExpfamFilter):
         _, n_out = memory_entry.shape
 
         low_rank_hat = jnp.concatenate([bel_pred.low_rank, memory_entry], axis=1)
+        inverse_diag = 1 / bel_pred.diagonal
         Gt = jnp.linalg.pinv(
             jnp.eye(self.rank + n_out) + 
-            jnp.einsum("ji,j,jk->ik", low_rank_hat, 1 / bel_pred.diagonal, low_rank_hat)
+            jnp.einsum("ji,j,jk->ik", low_rank_hat, inverse_diag, low_rank_hat)
         )
-        Ct = Ht.T @ At.T @ At
 
-        # Kalman gain
-        K1 = jnp.einsum("i,ij->ij", 1 / bel_pred.diagonal, Ct)
+        # LoFi gain
+        K1 = jnp.einsum(
+            "i,ji,kj,kl->il",
+            inverse_diag, Ht, At, At
+        )
         K2 = jnp.einsum(
-            "i,ij,jk,lk,lm,m->im",
-            1 / bel_pred.diagonal,
-            low_rank_hat, Gt,
-            low_rank_hat, Ct,
-            1 / bel_pred.diagonal
+            "i,ij,jk,lk,l,ml,nm,no->io",
+            inverse_diag, low_rank_hat, Gt, 
+            low_rank_hat, inverse_diag, 
+            Ht, At, At
         )
         Kt = K1 - K2
         
         mean_new = bel_pred.mean + Kt @ (yobs - yhat)
         low_rank_new, diag_drop = self._update_dlr(low_rank_hat)
-        diag_new = bel_pred.diagonal + diag_drop
+        diag_new = bel_pred.diagonal + diag_drop * self.inflate_diag
 
         bel_new = bel_pred.replace(
             mean=mean_new,
