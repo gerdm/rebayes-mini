@@ -383,8 +383,9 @@ class GreedyRunlength(ABC):
         log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
         # Compute log-posterior before reducing
         log_posterior_increase = log_joint_increase - jax.nn.logsumexp(log_joint)
+        log_posterior_reset = log_joint_reset - jax.nn.logsumexp(log_joint)
 
-        return log_posterior_increase
+        return log_posterior_increase, log_posterior_reset
 
 
     def deflate_belief(self, bel, bel_prior):
@@ -406,14 +407,13 @@ class GreedyRunlength(ABC):
         Update belief state and log-joint for a single observation
         """
 
-        log_posterior_increase = self.compute_log_posterior(y, X, bel, bel_prior)
+        log_posterior_increase, log_posterior_reset = self.compute_log_posterior(y, X, bel, bel_prior)
         bel_update = bel.replace(runlength=bel.runlength + 1, log_posterior=log_posterior_increase)
-        bel_update = self.deflate_belief(bel, bel_prior)
-        bel_update = self.update_bel(y, X, bel)
-
+        bel_update = self.deflate_belief(bel_update, bel_prior)
+        bel_update = self.update_bel(y, X, bel_update)
 
         posterior_increase = jnp.exp(log_posterior_increase)
-        bel_prior = bel_prior.replace(log_posterior=jnp.log1p(-posterior_increase))
+        bel_prior = bel_prior.replace(log_posterior=log_posterior_reset)
 
         no_changepoint = posterior_increase >= self.threshold
         bel_update = jax.tree.map(
@@ -422,7 +422,6 @@ class GreedyRunlength(ABC):
         )
 
         out = callback_fn(bel_update, bel, y, X)
-
         return bel_update, out
 
 
@@ -1199,7 +1198,7 @@ class LoFiExpfamRLSPR(GreedyRunlength):
     TODO: rename class to LoFiRLSPR
     """
     def __init__(
-        self, p_change, filter, shock, deflate_mean=True, threshold=1/2,
+        self, p_change, filter, shock, n_samples=1, deflate_mean=True, threshold=1/2,
     ):
         super().__init__(p_change, shock, deflate_mean, threshold)
         self.filter = filter
@@ -1212,8 +1211,19 @@ class LoFiExpfamRLSPR(GreedyRunlength):
         bel = bel.replace(mean=new_mean, diagonal=new_diagonal, low_rank=low_rank)
         return bel
 
+    def log_predictive_density_single(self, y, X, bel):
+        # sample_params = jax.vmap(self.filter._sample_lr_params)(key, bel)
+        sample_params = bel.mean
+        eta = self.filter.link_fn(sample_params, X).astype(float)
+        mean = self.filter.mean(eta).squeeze()
+        Rt = self.filter.covariance(eta).squeeze()
+        sigma = jnp.sqrt(Rt)
+
+        log_pred = -jnp.power((y - mean) / sigma, 2) / 2 - jnp.log(sigma) - jnp.log(2 * jnp.pi) / 2
+        return log_pred.squeeze()
+
     def log_predictive_density(self, y, X, bel):
-        return self.filter.log_predictive_density(y, X, bel)
+        return self.log_predictive_density_single(y, X, bel)
 
     def update_bel(self, y, X, bel):
         bel = self.filter._predict(bel)
