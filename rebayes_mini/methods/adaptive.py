@@ -77,7 +77,6 @@ class FullMemoryBayesianOnlineChangepointDetection(ABC):
         return log_joint_hist
 
 
-
     @partial(jax.jit, static_argnums=(0,))
     def update_bel_increase(self, t, ell, y, X, bel_hist):
         ix_prev = self.get_ix(t-1, ell-1)
@@ -1108,15 +1107,15 @@ class LoFiExpfamFBOCD(RunlengthSoftReset):
     Low-memory Kalman-filter BOCD
     """
     def __init__(
-        self, p_change, K, filter, shock
+        self, p_change, K, filter, shock, deflate_mean=True
     ):
-        super().__init__(p_change, K, shock)
+        super().__init__(p_change, K, shock, deflate_mean)
         self.filter = filter
 
     def deflate_belief(self, bel, bel_prior):
         gamma = jnp.exp(bel.log_posterior)
         new_mean = bel.mean * gamma
-        new_diagonal = bel_prior.diagonal * (1 - gamma) * self.shock + bel.diagonal * gamma
+        new_diagonal = bel_prior.diagonal * (1 - gamma ** 2) * self.shock + bel.diagonal * gamma ** 2
         low_rank = bel_prior.low_rank * (1 - gamma) + bel.low_rank * gamma
         bel = bel.replace(mean=new_mean, diagonal=new_diagonal, low_rank=low_rank)
         return bel
@@ -1125,7 +1124,7 @@ class LoFiExpfamFBOCD(RunlengthSoftReset):
         return self.filter.log_predictive_density(y, X, bel)
 
     def update_bel(self, y, X, bel):
-        # bel = self.filter._predict(bel)
+        bel = self.filter._predict(bel)
         bel = self.filter._update(bel, y, X)
         return bel
 
