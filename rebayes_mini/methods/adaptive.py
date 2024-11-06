@@ -439,6 +439,7 @@ class GreedyRunlength(ABC):
 
 
 class RunlengthSoftReset(Runlength):
+    # TODO: Deprecate in favour of GreedyRunlength
     def __init__(self, p_change, K, shock, deflate_mean):
         super().__init__(p_change, K)
         self.shock = shock
@@ -1192,14 +1193,15 @@ class RobustLinearModelFMBOCD(LinearModelFMBOCD):
         return log_p_pred
 
 
-class LoFiExpfamFBOCD(RunlengthSoftReset):
+class LoFiExpfamRLSPR(GreedyRunlength):
     """
-    Low-memory Kalman-filter BOCD
+    Low-memory Kalman-filter runlength soft-prior reset
+    TODO: rename class to LoFiRLSPR
     """
     def __init__(
-        self, p_change, K, filter, shock, deflate_mean=True
+        self, p_change, filter, shock, deflate_mean=True, threshold=1/2,
     ):
-        super().__init__(p_change, K, shock, deflate_mean)
+        super().__init__(p_change, shock, deflate_mean, threshold)
         self.filter = filter
 
     def deflate_belief(self, bel, bel_prior):
@@ -1225,12 +1227,11 @@ class LoFiExpfamFBOCD(RunlengthSoftReset):
         low_rank = state_filter.low_rank
 
         bel = states.ABOCDLoFiState(
-            mean=einops.repeat(mean, "i -> k i", k=self.K),
-            diagonal=einops.repeat(diagonal, "i -> k i", k=self.K),
-            low_rank=einops.repeat(low_rank, "i j -> k i j", k=self.K),
-            log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(0.0),
-            runlength=jnp.zeros(self.K),
-            log_posterior=jnp.zeros(self.K),
+            mean=mean,
+            diagonal=diagonal,
+            low_rank=low_rank,
+            runlength=0,
+            log_posterior=0.0,
         )
 
         return bel

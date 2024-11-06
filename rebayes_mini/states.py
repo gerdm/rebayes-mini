@@ -59,9 +59,8 @@ class ABOCDLoFiState:
     mean: chex.Array
     diagonal: chex.Array
     low_rank: chex.Array
-    log_joint: chex.Array
-    runlength: chex.Array
-    log_posterior: chex.Array
+    runlength: int
+    log_posterior: float
 
 
 @chex.dataclass
