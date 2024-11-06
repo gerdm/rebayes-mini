@@ -54,8 +54,44 @@ class ExpfamFilter(kf.ExpfamFilter):
             diagonal=diagonal,
         )
 
-    @partial(jax.jit, static_argnums=(0,))
-    def log_predictive_density(self, y, X, bel):
+    def _sample_lr_params(self, key, bel):
+        """
+        TODO(?): refactor code into jax.vmap. (It faster?
+        Sample parameters from a low-rank variational Gaussian approximation.
+        This implementation avoids the explicit construction of the
+        (D x D) covariance matrix.
+
+        We take s ~ N(0, W W^T + Psi I)
+
+        Implementation based on §4.2.2 of the L-RVGA paper [1].
+
+        [1] Lambert, Marc, Silvère Bonnabel, and Francis Bach.
+        "The limited-memory recursive variational Gaussian approximation (L-RVGA).
+         Statistics and Computing 33.3 (2023): 70.
+        """
+        key_x, key_eps = jax.random.split(key)
+        dim_full, dim_latent = bel.low_rank.shape
+        Psi_inv = 1 / bel.diagonal
+
+        eps_sample = jax.random.normal(key_eps, (dim_latent,))
+        x_sample = jax.random.normal(key_x, (dim_full,)) * jnp.sqrt(Psi_inv)
+
+        I_full = jnp.eye(dim_full)
+        I_latent = jnp.eye(dim_latent)
+        # M = I + W^T Psi^{-1} W
+        M = I_latent + jnp.einsum("ji,j,jk->ik", bel.low_rank, Psi_inv, bel.low_rank)
+        # L = Psi^{-1} W^T M^{-1}
+        L_tr = jnp.linalg.solve(M.T, jnp.einsum("i,ij->ji", Psi_inv, bel.low_rank))
+
+        # samples = (I - LW^T)x + Le
+        term1 = I_full - jnp.einsum("ji,kj->ik", L_tr, bel.low_rank)
+        x_transform = jnp.einsum("ij,j->i", term1, x_sample)
+        eps_transform = jnp.einsum("ji,j->i", L_tr, eps_sample)
+        samples = x_transform + eps_transform
+        return samples + bel.mean
+
+
+    def log_predictive_density_exact(self, y, X, bel):
         """
         Equation (59) - (61)
         """
