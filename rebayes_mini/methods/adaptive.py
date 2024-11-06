@@ -348,6 +348,96 @@ class Runlength(ABC):
         return bel, hist
 
 
+class GreedyRunlength(ABC):
+    def __init__(self, p_change, shock, deflate_mean, threshold=0.5):
+        self.p_change = p_change
+        self.shock = shock
+        self.deflate_mean = deflate_mean * 1.0
+        self.threshold = threshold
+
+
+    @abstractmethod
+    def init_bel(self, y, X, bel_init):
+        ...
+
+
+    @abstractmethod
+    def log_predictive_density(self, y, X, bel):
+        ...
+
+
+    @abstractmethod
+    def update_bel(self, y, X, bel):
+        """
+        Update belief state (posterior)
+        """
+        ...
+    
+
+    def compute_log_posterior(self, y, X, bel, bel_prior):
+        log_joint_increase = self.log_predictive_density(y, X, bel) + jnp.log1p(-self.p_change)
+        log_joint_reset = self.log_predictive_density(y, X, bel_prior) + jnp.log(self.p_change)
+
+        # Concatenate log_joints
+        log_joint = jnp.array([log_joint_reset, log_joint_increase])
+        log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
+        # Compute log-posterior before reducing
+        log_posterior_increase = log_joint_increase - jax.nn.logsumexp(log_joint)
+
+        return log_posterior_increase
+
+
+    def deflate_belief(self, bel, bel_prior):
+        """
+        TODO: Refactor ---  make abstract method. This should be implemented by the child class
+        """
+        gamma = jnp.exp(bel.log_posterior)
+        dim = bel.mean.shape[0]
+        deflate_mean = gamma ** self.deflate_mean
+
+        new_mean = bel.mean * deflate_mean
+        new_cov = bel.cov * gamma ** 2 + (1 - gamma ** 2) * jnp.eye(dim) * self.shock
+        bel = bel.replace(mean=new_mean, cov=new_cov)
+        return bel
+
+
+    def step(self, y, X, bel, bel_prior, callback_fn):
+        """
+        Update belief state and log-joint for a single observation
+        """
+
+        log_posterior_increase = self.compute_log_posterior(y, X, bel, bel_prior)
+        bel_update = bel.replace(runlength=bel.runlength + 1, log_posterior=log_posterior_increase)
+        bel_update = self.deflate_belief(bel, bel_prior)
+        bel_update = self.update_bel(y, X, bel)
+
+
+        posterior_increase = jnp.exp(log_posterior_increase)
+        bel_prior = bel_prior.replace(log_posterior=jnp.log1p(-posterior_increase))
+
+        no_changepoint = posterior_increase >= self.threshold
+        bel_update = jax.tree.map(
+            lambda update, prior: update * no_changepoint + prior * (1 - no_changepoint),
+            bel_update, bel_prior
+        )
+
+        out = callback_fn(bel_update, bel, y, X)
+
+        return bel_update, out
+
+
+    def scan(self, y, X, bel, callback_fn=None):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        bel_prior = bel
+        def _step(bel, yX):
+            y, X = yX
+            bel, out = self.step(y, X, bel, bel_prior, callback_fn)
+            return bel, out
+
+        bel, hist = jax.lax.scan(_step, bel, (y, X))
+        return bel, hist
+
+
 class RunlengthSoftReset(Runlength):
     def __init__(self, p_change, K, shock, deflate_mean):
         super().__init__(p_change, K)
