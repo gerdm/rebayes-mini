@@ -16,7 +16,7 @@ class LoFiState:
 class ExpfamFilter(kf.ExpfamFilter):
     def __init__(
         self, apply_fn, log_partition, suff_statistic, dynamics_covariance,
-        rank, inflate_diag=True,
+        rank, inflate_diag,
     ):
         """
         Moment-match Low-rank Extended Kalman filter
@@ -39,7 +39,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         super().__init__(apply_fn, log_partition, suff_statistic, dynamics_covariance)
         self.rank = rank
         self.inflate_diag = inflate_diag
-    
+
     def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
         self.grad_link_fn = jax.jacrev(self.link_fn)
@@ -75,7 +75,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         log_p_pred = distrax.MultivariateNormalFullCovariance(mean, covariance).log_prob(y)
         return log_p_pred
 
-    
+
     def _predict(self, state):
         I_lr = jnp.eye(self.rank)
         mean_pred = state.mean
@@ -99,7 +99,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         )
         return state_pred
 
-    
+
     def _update_dlr(self, low_rank_hat):
         singular_vectors, singular_values, _ = jnp.linalg.svd(low_rank_hat, full_matrices=False)
 
@@ -116,14 +116,14 @@ class ExpfamFilter(kf.ExpfamFilter):
         diag_drop = jnp.einsum("ij,ij->i", lr_drop, lr_drop)
 
         return low_rank_new, diag_drop
-                
+
 
     def _update(self, bel_pred, y, x):
         eta = self.link_fn(bel_pred.mean, x).astype(float)
         yhat = self.mean(eta)
         yobs = self.suff_statistic(y)
         Rt = jnp.atleast_2d(self.covariance(eta))
-        Ht = Rt @ self.grad_link_fn(bel_pred.mean, x)
+        Ht = self.grad_link_fn(bel_pred.mean, x)
 
         At = jnp.linalg.inv(jnp.linalg.cholesky(Rt))
         memory_entry = Ht.T @ At.T
@@ -132,24 +132,26 @@ class ExpfamFilter(kf.ExpfamFilter):
         low_rank_hat = jnp.concatenate([bel_pred.low_rank, memory_entry], axis=1)
         inverse_diag = 1 / bel_pred.diagonal
         Gt = jnp.linalg.pinv(
-            jnp.eye(self.rank + n_out) + 
+            jnp.eye(self.rank + n_out) +
             jnp.einsum("ji,j,jk->ik", low_rank_hat, inverse_diag, low_rank_hat)
         )
 
-        # LoFi gain
+        err = yobs - yhat
+
+        # LoFi gain times innovation
         K1 = jnp.einsum(
-            "i,ji,kj,kl->il",
-            inverse_diag, Ht, At, At
+            "i,ji,kj,kl,l->i",
+            inverse_diag, Ht, At, At, err
         )
         K2 = jnp.einsum(
-            "i,ij,jk,lk,l,ml,nm,no->io",
-            inverse_diag, low_rank_hat, Gt, 
-            low_rank_hat, inverse_diag, 
-            Ht, At, At
+            "i,ij,jk,lk,l,ml,nm,no,o->i",
+            inverse_diag, low_rank_hat, Gt,
+            low_rank_hat, inverse_diag,
+            Ht, At, At, err
         )
-        Kt = K1 - K2
-        
-        mean_new = bel_pred.mean + Kt @ (yobs - yhat)
+        Kt_err = K1 - K2
+
+        mean_new = bel_pred.mean + Kt_err
         low_rank_new, diag_drop = self._update_dlr(low_rank_hat)
         diag_new = bel_pred.diagonal + diag_drop * self.inflate_diag
 
@@ -171,10 +173,10 @@ class ExpfamFilter(kf.ExpfamFilter):
 
 
 class BernoulliFilter(ExpfamFilter):
-    def __init__(self, apply_fn, dynamics_covariance, rank):
+    def __init__(self, apply_fn, dynamics_covariance, rank, inflate_diag=True):
         super().__init__(
             apply_fn, self._log_partition, self._suff_stat,
-            dynamics_covariance, rank
+            dynamics_covariance, rank, inflate_diag
         )
 
     @partial(jax.jit, static_argnums=(0,))
@@ -187,13 +189,13 @@ class BernoulliFilter(ExpfamFilter):
 
 
 class MultinomialFilter(ExpfamFilter):
-    def __init__(self, apply_fn, dynamics_covariance, rank, eps=0.1):
+    def __init__(self, apply_fn, dynamics_covariance, rank, eps=0.1, inflate_diag=True):
         super().__init__(
             apply_fn, self._log_partition, self._suff_stat,
-            dynamics_covariance, rank
+            dynamics_covariance, rank, inflate_diag
         )
         self.eps = eps
-    
+
     @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
         eta = jnp.append(eta, 0.0)
@@ -210,3 +212,23 @@ class MultinomialFilter(ExpfamFilter):
     def covariance(self, eta):
         mean = self.mean(eta)
         return jnp.diag(mean) - jnp.outer(mean, mean) + jnp.eye(len(eta)) * self.eps
+
+
+class GaussianFilter(ExpfamFilter):
+    def __init__(self, apply_fn, dynamics_covariance, rank, variance=1.0, inflate_diag=True):
+        super().__init__(
+            apply_fn, self._log_partition, self._suff_stat, dynamics_covariance, rank, inflate_diag
+        )
+        self.variance = variance
+
+    def mean(self, eta):
+        return eta
+
+    def covariance(self, eta):
+        return self.variance * jnp.eye(1)
+
+    def _suff_stat(self, y):
+        return y
+
+    def _log_partition(self, eta):
+        return (eta ** 2 / 2).sum()
