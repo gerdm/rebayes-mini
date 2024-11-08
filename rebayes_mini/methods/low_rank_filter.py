@@ -137,7 +137,11 @@ class ExpfamFilter(kf.ExpfamFilter):
 
 
     def _update_dlr(self, low_rank_hat):
-        singular_vectors, singular_values, _ = jnp.linalg.svd(low_rank_hat, full_matrices=False)
+        # singular_vectors, singular_values, _ = jnp.linalg.svd(low_rank_hat, full_matrices=False)
+        singular_vectors, singular_values, _ = jnp.linalg.svd(low_rank_hat.T @ low_rank_hat, full_matrices=False, hermitian=True)
+        singular_values = jnp.sqrt(singular_values)
+        singular_values_inv = jnp.where(singular_values != 0, 1 / singular_values, 0.0)
+        singular_vectors = low_rank_hat @ (singular_vectors * singular_values_inv)
 
         singular_vectors_drop = singular_vectors[:, self.rank:] # Ut
         singular_values_drop = singular_values[self.rank:] # Λt
