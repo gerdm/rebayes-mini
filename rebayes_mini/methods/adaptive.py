@@ -2,7 +2,6 @@ import jax
 import einops
 import distrax
 import jax.numpy as jnp
-from tqdm import tqdm
 from abc import ABC, abstractmethod
 from functools import partial
 from rebayes_mini import states
@@ -143,9 +142,8 @@ class FullMemoryBayesianOnlineChangepointDetection(ABC):
         marginal = jnp.zeros(n_samples)
         log_joint = jnp.zeros((size_filter,))
         log_cond = jnp.zeros((size_filter,))
-        # bel_hist = self.init_bel(y, X, bel_prior, size_filter)
 
-        for t in tqdm(range(n_samples)):
+        for t in range(n_samples):
             tix = jnp.maximum(0, t-1)
             xt = X[tix].squeeze()
             yt = y[tix].squeeze()
