@@ -19,7 +19,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         rank, inflate_diag,
     ):
         """
-        Moment-match Low-rank Extended Kalman filter
+        Moment-matched Low-rank Extended Kalman filter
 
         Parameters
         ----------
@@ -136,12 +136,22 @@ class ExpfamFilter(kf.ExpfamFilter):
         return state_pred
 
 
-    def _update_dlr(self, low_rank_hat):
-        # singular_vectors, singular_values, _ = jnp.linalg.svd(low_rank_hat, full_matrices=False)
-        singular_vectors, singular_values, _ = jnp.linalg.svd(low_rank_hat.T @ low_rank_hat, full_matrices=False, hermitian=True)
+    def _svd(self, W):
+        """
+        Fast implementation of reduced SVD
+        TODO: implement randomised SVD?
+
+        See: https://math.stackexchange.com/questions/3685997/how-do-you-compute-the-reduced-svd
+        """
+        singular_vectors, singular_values, _ = jnp.linalg.svd(W.T @ W, full_matrices=False, hermitian=True)
         singular_values = jnp.sqrt(singular_values)
         singular_values_inv = jnp.where(singular_values != 0, 1 / singular_values, 0.0)
-        singular_vectors = low_rank_hat @ (singular_vectors * singular_values_inv)
+        singular_vectors = W @ (singular_vectors * singular_values_inv)
+        return singular_values, singular_vectors
+
+
+    def _update_dlr(self, low_rank_hat):
+        singular_values, singular_vectors = self._svd(low_rank_hat)
 
         singular_vectors_drop = singular_vectors[:, self.rank:] # Ut
         singular_values_drop = singular_values[self.rank:] # Λt
