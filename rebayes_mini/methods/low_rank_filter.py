@@ -162,8 +162,11 @@ class ExpfamFilter(kf.ExpfamFilter):
         low_rank_new = jnp.einsum("Dd,d->Dd", singular_vectors, singular_values)
 
         # Obtain additive term for diagonal
-        lr_drop = jnp.einsum("Dd,d->Dd", singular_vectors_drop, singular_values_drop)
-        diag_drop = jnp.einsum("ij,ij->i", lr_drop, lr_drop)
+        diag_drop = jnp.einsum(
+            "ij,j,ij,j->i",
+            singular_vectors_drop, singular_values_drop,
+            singular_vectors_drop, singular_values_drop
+        )
 
         return low_rank_new, diag_drop
 
