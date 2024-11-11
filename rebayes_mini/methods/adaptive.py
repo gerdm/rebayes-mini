@@ -181,7 +181,7 @@ class MixtureExperts(ABC):
         self.n_experts = n_experts
         self.eta = eta
         self.log_transition_matrix = self._define_transition_matrix(alpha)
-    
+
     def _define_transition_matrix(self, alpha):
         """
         Transition matrix for the experts
@@ -191,23 +191,23 @@ class MixtureExperts(ABC):
         transition_matrix = transition_matrix.at[jnp.diag_indices(self.n_experts)].set(1 - alpha)
         log_transition_matrix = jnp.log(transition_matrix)
         return log_transition_matrix
-    
+
     @abstractmethod
     def lossfn(self, y, X, bel):
         ...
-    
+
     @abstractmethod
     def init_bel(self, y, X, bel_init):
         ...
-    
+
     @abstractmethod
     def predict_bel(self, bel, factor):
         ...
-    
+
     @abstractmethod
     def update_bel(self, y, X, bel):
         ...
-    
+
     def predict_and_update_weight(self, y, X, bels_pred, bel):
         # could be a negative log-predictive density
         losses = jax.vmap(self.lossfn, in_axes=(None, None, 0))(y, X, bels_pred)
@@ -233,7 +233,7 @@ class MixtureExperts(ABC):
         out = callback_fn(bel_posterior, bel, y, X)
 
         return bel_posterior, out
-    
+
     def scan(self, y, X, key, bel, callback_fn):
         callback_fn = callbacks.get_null if callback_fn is None else callback_fn
         def _step(bel, tyX):
@@ -370,7 +370,7 @@ class GreedyRunlength(ABC):
         Update belief state (posterior)
         """
         ...
-    
+
 
     def compute_log_posterior(self, y, X, bel, bel_prior):
         log_joint_increase = self.log_predictive_density(y, X, bel) + jnp.log1p(-self.p_change)
@@ -1112,7 +1112,7 @@ class ExpfamMEACI(MixtureExperts):
     def __init__(self, n_experts, eta, alpha, filter):
         super().__init__(n_experts, eta, alpha)
         self.filter = filter
-    
+
     def init_bel(self, mean, cov, factors):
         """
         Initialize belief state.
@@ -1126,7 +1126,7 @@ class ExpfamMEACI(MixtureExperts):
             log_weights=jnp.log(jnp.ones(self.n_experts) / self.n_experts),
         )
         return bel
-    
+
     def lossfn(self, y, X, bel):
         return -self.filter.log_predictive_density(y, X, bel)
 
@@ -1140,11 +1140,99 @@ class ExpfamMEACI(MixtureExperts):
         pcov_pred = bel.cov + factor * I
         bel = bel.replace(mean=pmean_pred, cov=pcov_pred)
         return bel
-    
+
 
     def update_bel(self, y, X, bel):
         bel = self.filter._update(bel, y, X)
         return bel
+
+
+class GaussPositionRLPR(Runlength):
+    """
+    Runlength prior reset (RL-PR)
+    """
+    def __init__(
+            self, p_change, K, filter, moment_match=True
+    ):
+        super().__init__(p_change, K)
+        self.filter = filter
+        self.moment_match = moment_match
+
+    def init_bel(self, mean, cov, log_joint_init, x_init):
+        state_filter = self.filter.init_bel(mean, cov)
+        mean = state_filter.mean
+        cov = state_filter.cov
+
+        bel = states.BOCDPosGaussState(
+                mean=einops.repeat(mean, "i -> k i", k=self.K),
+                cov=einops.repeat(cov, "i j -> k i j", k=self.K),
+                log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(log_joint_init),
+                runlength=jnp.zeros(self.K),
+                last_x=jnp.ones(self.K) * x_init
+        )
+        return bel
+
+    def update_bel(self, y, X, bel):
+        bel, _ = self.filter.step(bel, y, X, callbacks.get_null)
+        return bel
+
+    def log_predictive_density(self, y, X, bel):
+        """
+        compute the log-posterior predictive density
+        of the moment-matched Gaussian
+        """
+        mean  = self.filter.vobs_fn(bel.mean, X, bel).astype(float)
+        Rt = self.filter.observation_covariance
+        Ht = self.filter.jac_obs(bel.mean, X, bel)
+        covariance = Ht @ bel.cov @ Ht.T + Rt
+        mean = jnp.atleast_1d(mean)
+        log_p_pred = distrax.MultivariateNormalFullCovariance(mean, covariance).log_prob(y)
+        return log_p_pred
+
+    def moment_match_prior(self, y, X, bel, bel_prior):
+        """
+        Moment-match the first two moments of the prior at time t.
+        """
+        weights_prior = bel.log_joint - jax.nn.logsumexp(bel.log_joint)
+        weights_prior = jnp.exp(weights_prior) * self.p_change
+        bel_hat = jax.vmap(self.update_bel, in_axes=(None, None, 0))(y, X, bel)
+
+        # Moment-matched mean
+        mean_prior = jnp.einsum("k,kd->d", weights_prior, bel_hat.mean)
+        # Moment-matched covariance
+        E2 = bel_hat.cov + jnp.einsum("ki,kj->kij", bel_hat.mean, bel_hat.mean)
+        cov_prior = (
+            jnp.einsum("k,kij->ij", weights_prior, E2) -
+            jnp.einsum("i,j->ij", mean_prior, mean_prior)
+        )
+
+        bel_prior = bel_prior.replace(
+            mean=mean_prior,
+            cov=cov_prior,
+            # update the first value in the new sequence to be the current value
+            last_x=jnp.squeeze(X)
+        )
+        return bel_prior
+
+
+    def step(self, y, X, bel, bel_prior, callback_fn):
+        """
+        Update belief state and log-joint for a single observation
+        """
+        bel_prior = jax.lax.cond(
+            self.moment_match,
+            lambda: self.moment_match_prior(y, X, bel, bel_prior),
+            lambda: bel_prior,
+        )
+
+        log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
+        bel_posterior = self.update_bel_indices(y, X, bel, bel_prior, top_indices)
+
+        bel_posterior = self.update_runlengths(bel_posterior, top_indices)
+        bel_posterior = bel_posterior.replace(log_joint=log_joint)
+
+        out = callback_fn(bel_posterior, bel, y, X, top_indices)
+        return bel_posterior, out
 
 
 class RobustLinearModelFMBOCD(LinearModelFMBOCD):
