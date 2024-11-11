@@ -7,6 +7,21 @@ class GaussState:
 
 
 @chex.dataclass
+class BOCDPosGaussState:
+    """
+    State for a
+    Bayesian online changepoint detection with stored position
+    of the features since the last changepoint (BOCDP)
+    with Gaussian posterior
+    """
+    mean: chex.Array
+    cov: chex.Array
+    log_joint: chex.Array
+    runlength: chex.Array
+    last_x: chex.Array
+
+
+@chex.dataclass
 class BOCDGaussState:
     mean: chex.Array
     cov: chex.Array
