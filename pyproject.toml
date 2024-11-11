@@ -20,4 +20,5 @@ dependencies = [
     "einops",
     "optax",
     "distrax",
+    "flax",
 ]
