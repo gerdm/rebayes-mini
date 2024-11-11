@@ -140,6 +140,7 @@ class ExtendedKalmanFilter:
         def _step(bel, yX):
             y, X = yX
             bel, out = self.step(bel, y, X, callback_fn)
+            return bel, out
         bels, hist = jax.lax.scan(_step, bel, (y, X))
         return bels, hist
 
