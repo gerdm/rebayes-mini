@@ -98,7 +98,6 @@ class ExtendedKalmanFilter:
         cov = jnp.eye(dim_latent) * cov
         return vlatent, cov, dim_latent
 
-
     def init_bel(self, mean, cov=1.0):
         mean, cov, dim_latent = self._init_components(mean, cov)
 
@@ -114,34 +113,69 @@ class ExtendedKalmanFilter:
         bel = bel.replace(mean=mean_pred, cov=cov_pred)
         return bel
 
-    def _update(self, bel, y, x):
-        Ht = self.jac_obs(bel.mean, x)
-        Rt = self.observation_covariance
-
+    def _update(self, bel, y, x, yhat, Ht, Rt):
         St = Ht @ bel.cov @ Ht.T + Rt
         Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
 
-        err = y - self.vobs_fn(bel.mean, x)
+        err = y - yhat
         mean_update = bel.mean + Kt @ err
         cov_update = bel.cov - Kt @ St @ Kt.T
 
         bel = bel.replace(mean=mean_update, cov=cov_update)
         return bel
 
-    def step(self, bel, xs, callback_fn):
-        xt, yt = xs
+    def step(self, bel, y, x, callback_fn):
         bel_pred = self._predict(bel)
-        bel_update = self._update(bel_pred, yt, xt)
 
-        output = callback_fn(bel_update, bel_pred, yt, xt)
+        Ht = self.jac_obs(bel.mean, x)
+        Rt = self.observation_covariance
+        yhat = self.vobs_fn(bel.mean, x)
+        bel_update = self._update(bel_pred, y, x, yhat, Ht, Rt)
+
+        output = callback_fn(bel_update, bel_pred, y, x)
         return bel_update, output
 
     def scan(self, bel, y, X, callback_fn=None):
-        xs = (X, y)
         callback_fn = callbacks.get_null if callback_fn is None else callback_fn
-        _step = partial(self.step, callback_fn=callback_fn)
-        bels, hist = jax.lax.scan(_step, bel, xs)
+        def _step(bel, yX):
+            y, X = yX
+            bel, out = self.step(bel, y, X, callback_fn)
+        bels, hist = jax.lax.scan(_step, bel, (y, X))
         return bels, hist
+
+
+class BeliefExtendedKalmanFilter(ExtendedKalmanFilter):
+    """
+    Extended-space extended Kalman filter (EKF) that considers a
+    three-argument fn_obs containing the mean, x, and belief.
+    """
+    def __init__(self, fn_latent, fn_obs, dynamics_covariance, observation_covariance):
+        super().__init__(fn_latent, fn_obs, dynamics_covariance, observation_covariance)
+    
+    def _initalise_vector_fns(self, latent):
+        vlatent, rfn = ravel_pytree(latent)
+
+        @jax.jit # ht(z)
+        def vobs_fn(latent, x, bel):
+            latent = rfn(latent)
+            return self.fn_obs(latent, x, bel)
+
+        @jax.jit # ft(z, u)
+        def vlatent_fn(latent):
+            return self.fn_latent(latent)
+
+        return rfn, vlatent_fn, vobs_fn, vlatent
+
+    def step(self, bel, y, x, callback_fn):
+        bel_pred = self._predict(bel)
+
+        Ht = self.jac_obs(bel.mean, x, bel)
+        Rt = self.observation_covariance
+        yhat = self.vobs_fn(bel.mean, x, bel)
+        bel_update = self._update(bel_pred, y, x, yhat, Ht, Rt)
+
+        output = callback_fn(bel_update, bel_pred, y, x)
+        return bel_update, output
 
 
 class ExpfamFilter:
@@ -227,8 +261,7 @@ class ExpfamFilter:
         bel = bel.replace(mean=mean_update, cov=cov_update)
         return bel
 
-    def step(self, bel, xs, callback_fn):
-        x, y = xs
+    def step(self, bel, y, x, callback_fn):
         bel_pred = self._predict(bel)
         bel_update = self._update(bel_pred, y, x)
 
@@ -236,11 +269,14 @@ class ExpfamFilter:
         return bel_update, output
 
     def scan(self, bel, y, X, callback_fn=None):
-        xs = (X, y)
         callback_fn = callbacks.get_null if callback_fn is None else callback_fn
-        _step = partial(self.step, callback_fn=callback_fn)
-        bels, hist = jax.lax.scan(_step, bel, xs)
-        return bels, hist
+        def _step(bel, yX):
+            y, x = yX
+            bel, out = self.step(y, x, callback_fn)
+            return bel, out
+
+        bel, hist = jax.lax.scan(_step, bel, (y, X))
+        return bel, hist
 
 
 class GaussianFilter(ExpfamFilter):
