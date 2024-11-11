@@ -291,31 +291,21 @@ class Runlength(ABC):
         log_joint = jnp.concatenate([log_joint_reset, log_joint_increase])
         log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
         # reduce to K values --- index 0 is a changepoint
-        log_joint, top_indices = jax.lax.top_k(log_joint, k=self.K)
+        _, top_indices = jax.lax.top_k(log_joint, k=self.K)
         return log_joint, top_indices
 
 
-    def update_bel_indices(self, y, X, bel, bel_prior, top_indices):
+    def update_beliefs(self, y, X, bel, bel_prior):
         """
         Update belief state (posterior) for the chosen indices
         """
-        # Update all belief states when a changepoint did not happen
+        # Update all belief states if a changepoint did not happen
         vmap_update_bel = jax.vmap(self.update_bel, in_axes=(None, None, 0))
         bel = vmap_update_bel(y, X, bel)
-        # Increment belief state by adding bel_prior and keeping top_indices
+        # Update all runlenghts
+        bel = bel.replace(runlength=bel.runlength+1)
+        # Increment belief state by adding bel_prior
         bel = jax.tree.map(lambda prior, updates: jnp.concatenate([prior[None], updates]), bel_prior, bel)
-        bel = jax.tree.map(lambda param: jnp.take(param, top_indices, axis=0), bel)
-        return bel
-
-
-    def update_runlengths(self, bel, top_indices):
-        """
-        Update runlengths
-        """
-        runlengths = bel.runlength + 1
-        runlengths = jnp.concatenate([jnp.array([0]), runlengths])
-        runlengths = jnp.take(runlengths, top_indices, axis=0)
-        bel = bel.replace(runlength=runlengths)
         return bel
 
 
@@ -323,11 +313,10 @@ class Runlength(ABC):
         """
         Update belief state and log-joint for a single observation
         """
-        log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
-        bel_posterior = self.update_bel_indices(y, X, bel, bel_prior, top_indices)
-
-        bel_posterior = self.update_runlengths(bel_posterior, top_indices)
-        bel_posterior = bel_posterior.replace(log_joint=log_joint)
+        log_joint_full, top_indices = self.update_log_joint(y, X, bel, bel_prior)
+        bel_posterior = self.update_beliefs(y, X, bel, bel_prior)
+        bel_posterior = bel_posterior.replace(log_joint=log_joint_full)
+        bel_posterior = jax.tree.map(lambda param: jnp.take(param, top_indices, axis=0), bel_posterior)
 
         out = callback_fn(bel_posterior, bel, y, X, top_indices)
 
@@ -1210,10 +1199,10 @@ class GaussPositionRLPR(Runlength):
             mean=mean_prior,
             cov=cov_prior,
             # update the first value in the new sequence to be the current value
-            last_x=jnp.squeeze(X)
+            last_x=jnp.squeeze(X),
+            runlength=0.0
         )
         return bel_prior
-
 
     def step(self, y, X, bel, bel_prior, callback_fn):
         """
@@ -1225,14 +1214,37 @@ class GaussPositionRLPR(Runlength):
             lambda: bel_prior,
         )
 
-        log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
-        bel_posterior = self.update_bel_indices(y, X, bel, bel_prior, top_indices)
-
-        bel_posterior = self.update_runlengths(bel_posterior, top_indices)
-        bel_posterior = bel_posterior.replace(log_joint=log_joint)
-
-        out = callback_fn(bel_posterior, bel, y, X, top_indices)
+        bel_posterior, out = super().step(y, X, bel, bel_prior, callback_fn)
         return bel_posterior, out
+
+
+class WoLFPositionRLPR(GaussPositionRLPR):
+    def __init__(
+        self,  p_change, K, filter, moment_match=False, c=3.0,
+    ):
+        super().__init__(p_change, K, filter, moment_match)
+        self.c = c
+
+    def imq_kernel(self, residual):
+        """
+        Inverse multi-quadratic kernel
+        """
+        return 1 / jnp.sqrt(1 + residual ** 2 / self.c ** 2)
+    
+    def log_predictive_density(self, y, X, bel):
+        """
+        Compute log-posterior predictive for a Gaussian with known variance
+        """
+        mean  = self.filter.vobs_fn(bel.mean, X, bel).astype(float)
+        Rt = self.filter.observation_covariance
+        Ht = self.filter.jac_obs(bel.mean, X, bel)
+        residual = y - mean
+        Wt = self.imq_kernel(residual)
+        mean = jnp.atleast_1d(mean)
+        covariance = Ht @ bel.cov @ Ht.T + Rt / Wt ** 2
+
+        log_p_pred = distrax.Normal(mean, covariance).log_prob(y).squeeze()
+        return log_p_pred
 
 
 class RobustLinearModelFMBOCD(LinearModelFMBOCD):
