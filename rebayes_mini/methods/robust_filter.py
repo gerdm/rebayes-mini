@@ -5,7 +5,7 @@ from functools import partial
 from jax.flatten_util import ravel_pytree
 from jax.scipy.special import digamma
 from rebayes_mini.methods.replay_sgd import FifoSGD
-from rebayes_mini.methods.gauss_filter import KalmanFilter, ExtendedKalmanFilter, BernoulliFilter
+from rebayes_mini.methods.gauss_filter import KalmanFilter, ExtendedKalmanFilter, BeliefExtendedKalmanFilter
 
 @chex.dataclass
 class OutlierEKFState:
@@ -373,6 +373,7 @@ class ExtendedKalmanFilterMD(ExtendedKalmanFilter):
         self.observation_precision = jnp.linalg.inv(self.observation_covariance)
 
     def _update(self, bel, y, x):
+        # TODO: Refactor with new API
         err = y - self.vobs_fn(bel.mean, x)
         mahalanobis_distance = jnp.sqrt(jnp.einsum("j,jk,k->", err, self.observation_precision, err))
         weighting_term = (mahalanobis_distance < self.threshold).astype(float)
@@ -398,22 +399,40 @@ class ExtendedKalmanFilterIMQ(ExtendedKalmanFilter):
         super().__init__(latent_fn, obs_fn, dynamics_covariance, observation_covariance)
         self.soft_threshold = soft_threshold
 
+    def step(self, bel, y, x, callback_fn):
+        bel_pred = self._predict(bel)
 
-    def _update(self, bel, y, x):
-        err = y - self.vobs_fn(bel.mean, x)
         weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
-
         Ht = self.jac_obs(bel.mean, x)
         Rt = self.observation_covariance / weighting_term
+        yhat = self.vobs_fn(bel.mean, x)
 
-        St = Ht @ bel.cov @ Ht.T + Rt
-        Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
+        bel_update = self._update(bel_pred, y, x, yhat, Ht, Rt)
 
-        mean_update = bel.mean + Kt @ err
-        cov_update = bel.cov - Kt @ St @ Kt.T
+        output = callback_fn(bel_update, bel_pred, y, x)
+        return bel_update, output
 
-        bel = bel.replace(mean=mean_update, cov=cov_update)
-        return bel
+
+class BeliefExtendedKalmanFilterIMQ(BeliefExtendedKalmanFilter):
+    def __init__(
+        self, latent_fn, obs_fn, dynamics_covariance, observation_covariance, soft_threshold
+    ): 
+        super().__init__(latent_fn, obs_fn, dynamics_covariance, observation_covariance) 
+        self.soft_threshold = soft_threshold
+
+    def step(self, bel, y, x, callback_fn):
+        bel_pred = self._predict(bel)
+
+        yhat = self.vobs_fn(bel_pred.mean, x, bel_pred)
+        Ht = self.jac_obs(bel_pred.mean, x, bel)
+        err = y - yhat
+        weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
+        Rt = self.observation_covariance / weighting_term
+
+        bel_update = self._update(bel_pred, y, x, yhat, Ht, Rt)
+
+        output = callback_fn(bel_update, bel_pred, y, x)
+        return bel_update, output
 
 
 class ExtendedKalmanFilterBernoulli(ExtendedKalmanFilter):
