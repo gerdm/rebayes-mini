@@ -152,7 +152,7 @@ class BeliefExtendedKalmanFilter(ExtendedKalmanFilter):
     """
     def __init__(self, fn_latent, fn_obs, dynamics_covariance, observation_covariance):
         super().__init__(fn_latent, fn_obs, dynamics_covariance, observation_covariance)
-    
+
     def _initalise_vector_fns(self, latent):
         vlatent, rfn = ravel_pytree(latent)
 
@@ -286,13 +286,13 @@ class GaussianFilter(ExpfamFilter):
             apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
         )
         self.variance = variance
-    
+
     def mean(self, eta):
         return eta
-    
+
     def covariance(self, eta):
         return self.variance * jnp.eye(1)
-    
+
     def _suff_stat(self, y):
         return y
 
