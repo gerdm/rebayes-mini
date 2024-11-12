@@ -273,7 +273,7 @@ class ExpfamFilter:
         callback_fn = callbacks.get_null if callback_fn is None else callback_fn
         def _step(bel, yX):
             y, x = yX
-            bel, out = self.step(y, x, callback_fn)
+            bel, out = self.step(bel, y, x, callback_fn)
             return bel, out
 
         bel, hist = jax.lax.scan(_step, bel, (y, X))
