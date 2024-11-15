@@ -988,19 +988,23 @@ class ExpfamRLCC(RunlengthChangepointCount):
         return bel
 
 
-class ExpfamRLSR(RunlengthSoftReset):
-    """
-    Runlength with soft reset (RL-SR)
-    We softly revert to the prior mean / covariance, as long
-    as the hypothesis with highest density is not a changepoint (k=0)
-
-    This method composes RL-SPR and RL-SCR
-    """
-    def __init__(
-        self, p_change, K, shock, deflate_mean, filter,
-    ):
-        super().__init__(p_change, K, shock, deflate_mean)
+class ExpfamRLOUPR(GreedyRunlength):
+    def __init__(self, p_change, shock, deflate_mean, filter, threshold=0.5):
+        super().__init__(p_change, shock, deflate_mean, threshold)
         self.filter = filter
+
+    def init_bel(self, mean, cov, log_posterior_init=0.0):
+        state_filter = self.filter.init_bel(mean, cov)
+        mean = state_filter.mean
+        cov = state_filter.cov
+
+        bel = states.GreedyRunlengthGaussState(
+            mean=mean,
+            cov=cov,
+            runlength=0,
+            log_posterior=log_posterior_init
+        )
+        return bel
 
     def log_predictive_density(self, y, X, bel):
         return self.filter.log_predictive_density(y, X, bel)
@@ -1008,24 +1012,6 @@ class ExpfamRLSR(RunlengthSoftReset):
     def update_bel(self, y, X, bel):
         bel_pred = self.filter._predict(bel)
         bel = self.filter._update(bel_pred, y, X)
-        return bel
-
-    def init_bel(self, mean, cov, log_joint_init):
-        """
-        Initialize belief state
-        """
-        state_filter = self.filter.init_bel(mean, cov)
-        mean = state_filter.mean
-        cov = state_filter.cov
-
-        bel = states.ABOCDGaussState(
-            mean=einops.repeat(mean, "i -> k i", k=self.K),
-            cov=einops.repeat(cov, "i j -> k i j", k=self.K),
-            log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(log_joint_init),
-            runlength=jnp.zeros(self.K),
-            log_posterior=jnp.zeros(self.K),
-        )
-
         return bel
 
 

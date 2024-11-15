@@ -84,3 +84,11 @@ class MixtureExpertsGaussState:
     cov: chex.Array
     factors: chex.Array
     log_weights: chex.Array
+
+
+@chex.dataclass
+class GreedyRunlengthGaussState:
+    mean: chex.Array
+    cov: chex.Array
+    runlength: int
+    log_posterior: float
