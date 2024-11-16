@@ -318,7 +318,7 @@ class Runlength(ABC):
         bel_posterior = bel_posterior.replace(log_joint=log_joint_full)
         bel_posterior = jax.tree.map(lambda param: jnp.take(param, top_indices, axis=0), bel_posterior)
 
-        out = callback_fn(bel_posterior, bel, y, X, top_indices)
+        out = callback_fn(bel_posterior, bel, y, X)
 
         return bel_posterior, out
 
@@ -422,55 +422,6 @@ class GreedyRunlength(ABC):
 
         bel, hist = jax.lax.scan(_step, bel, (y, X))
         return bel, hist
-
-
-class RunlengthSoftReset(Runlength):
-    # TODO: Deprecate in favour of GreedyRunlength
-    def __init__(self, p_change, K, shock, deflate_mean):
-        super().__init__(p_change, K)
-        self.shock = shock
-        self.deflate_mean = deflate_mean * 1.0
-
-    def update_log_joint(self, y, X, bel, bel_prior):
-        log_joint_reset = self.update_log_joint_reset(y, X, bel, bel_prior)
-        log_joint_increase = self.update_log_joint_increase(y, X, bel)
-        # Expand log-joint
-        log_joint = jnp.concatenate([log_joint_reset, log_joint_increase])
-        log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
-        # Compute log-posterior before reducing
-        log_posterior = log_joint - jax.nn.logsumexp(log_joint)
-        # reduce to K values --- index 0 is a changepoint
-        log_joint, top_indices = jax.lax.top_k(log_joint, k=self.K)
-        log_posterior = log_posterior[top_indices]
-        return log_posterior, log_joint, top_indices
-
-
-    def deflate_belief(self, bel, bel_prior):
-        gamma = jnp.exp(bel.log_posterior)
-        dim = bel.mean.shape[0]
-        deflate_mean = gamma ** self.deflate_mean
-
-        new_mean = bel.mean * deflate_mean
-        new_cov = bel.cov * gamma ** 2 + (1 - gamma ** 2) * jnp.eye(dim) * self.shock
-        bel = bel.replace(mean=new_mean, cov=new_cov)
-        return bel
-
-
-    def step(self, y, X, bel, bel_prior, callback_fn):
-        """
-        Update belief state and log-joint for a single observation
-        """
-
-        log_posterior, log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
-        bel_posterior = jax.vmap(self.deflate_belief, in_axes=(0, None))(bel, bel_prior)
-        bel_posterior = self.update_bel_indices(y, X, bel_posterior, bel_prior, top_indices)
-
-        bel_posterior = self.update_runlengths(bel_posterior, top_indices)
-        bel_posterior = bel_posterior.replace(log_joint=log_joint, log_posterior=log_posterior)
-
-        out = callback_fn(bel_posterior, bel, y, X, top_indices)
-
-        return bel_posterior, out
 
 
 class RunlengthChangepointCount(ABC):

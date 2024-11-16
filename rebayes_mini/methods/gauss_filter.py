@@ -217,21 +217,22 @@ class ExpfamFilter:
     def covariance(self, eta):
         return jax.hessian(self.log_partition)(eta).squeeze()
 
+    def predictive_density(self, bel, X):
+        eta = self.link_fn(bel.mean, X).astype(float)
+        mean = self.mean(eta)
+        Rt = jnp.atleast_2d(self.covariance(eta))
+        Ht = self.grad_link_fn(bel.mean, X)
+        covariance = Ht @ bel.cov @ Ht.T + Rt
+        mean = jnp.atleast_1d(mean)
+        dist = distrax.MultivariateNormalFullCovariance(mean, covariance)
+        return dist
 
-    @partial(jax.jit, static_argnums=(0,))
     def log_predictive_density(self, y, X, bel):
         """
         compute the log-posterior predictive density
         of the moment-matched Gaussian
         """
-        eta = self.link_fn(bel.mean, X).astype(float)
-        mean = self.mean(eta)
-        Rt = jnp.atleast_2d(self.covariance(eta))
-        # Ht = Rt @ self.grad_link_fn(bel.mean, X)
-        Ht = self.grad_link_fn(bel.mean, X)
-        covariance = Ht @ bel.cov @ Ht.T + Rt
-        mean = jnp.atleast_1d(mean)
-        log_p_pred = distrax.MultivariateNormalFullCovariance(mean, covariance).log_prob(y)
+        log_p_pred = self.predictive_density(bel, X).log_prob(y)
         return log_p_pred
 
 
