@@ -90,9 +90,7 @@ class MomentMatchedLinearGaussian:
 
 class GaussianFilter(MomentMatchedLinearGaussian):
     def __init__(self, apply_fn, variance=1.0):
-        super().__init__(
-            apply_fn, dynamics_covariance
-        )
+        super().__init__(apply_fn)
         self.variance = variance
 
     def mean(self, eta):
@@ -101,9 +99,15 @@ class GaussianFilter(MomentMatchedLinearGaussian):
     def covariance(self, eta):
         return self.variance * jnp.eye(1)
 
-    def _suff_stat(self, y):
-        return y
 
-    def _log_partition(self, eta):
-        return (eta ** 2 / 2).sum()
+class MultinomialFilter(MomentMatchedLinearGaussian):
+    def __init__(self, apply_fn, eps=0.1):
+        super().__init__(apply_fn)
+        self.eps = eps
 
+    def mean(self, eta):
+        return jax.nn.softmax(eta)
+
+    def covariance(self, eta):
+        mean = self.mean(eta)
+        return jnp.diag(mean) - jnp.outer(mean, mean) + jnp.eye(len(eta)) * self.eps
