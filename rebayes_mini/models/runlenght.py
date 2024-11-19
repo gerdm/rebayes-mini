@@ -1,4 +1,7 @@
-from rebayes_mini.auxiliary import Runlength
+import einops
+import jax.numpy as jnp
+from functools import partial
+from rebayes_mini.auxiliary.runlenght import Runlength
 from rebayes_mini.states.gaussian import GaussRunlenght
 from rebayes_mini.updater.full_rank_gaussian import GaussianFilter
 
@@ -15,8 +18,8 @@ class GaussianRunlenghtPriorReset(Runlength):
     def log_predictive_density(self, y, X, bel):
         return self.updater.log_predictive_density(y, X, bel)
 
-    def update_bel(self, y, X, bel):
-        bel = self.updater.update(bel_pred, y, X)
+    def update_bel(self, bel, y, X):
+        bel = self.updater.update(bel, y, X)
         return bel
 
     def init_bel(self, mean, cov, log_joint_init=0.0):

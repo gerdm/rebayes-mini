@@ -1,20 +1,24 @@
+import jax
+import distrax
+import jax.numpy as jnp
 from abc import ABC, abstractmethod
+from jax.flatten_util import ravel_pytree
+from rebayes_mini.states.gaussian import Gaussian
 
 class MomentMatchedLinearGaussian:
-    def __init__(self, apply_fn, dynamics_covariance):
+    def __init__(self, apply_fn):
         """
         apply_fn: function
             Maps state and observation to the natural parameters
         """
         self.apply_fn = apply_fn
-        self.dynamics_covariance = dynamics_covariance
 
     def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
         self.grad_link_fn = jax.jacrev(self.link_fn)
 
         nparams = len(init_params)
-        return GaussState(
+        return Gaussian(
             mean=init_params,
             cov=jnp.eye(nparams) * cov,
         )

@@ -9,3 +9,8 @@ class GaussRunlenght:
     cov: chex.Array
     log_joint: chex.Array
     runlength: chex.Array
+
+@chex.dataclass
+class Gaussian:
+    mean: chex.Array
+    cov: chex.Array

@@ -1,3 +1,6 @@
+import jax
+import jax.numpy as jnp
+from functools import partial
 from abc import ABC, abstractmethod
 
 class Runlength(ABC):
