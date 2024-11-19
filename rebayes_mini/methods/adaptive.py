@@ -546,42 +546,6 @@ class RunlengthChangepointCount(ABC):
         return bel, hist
 
 
-class RunlengthCovarianceReset(Runlength):
-    def __init__(self, p_change, K, shock=0.0, shrink=1.0):
-        """
-        Covariance-reset runlength (CRRL)
-        """
-        super().__init__(p_change, K)
-        self.shock = shock
-        self.shrink = shrink
-
-    def step(self, y, X, bel, bel_prior, callback_fn):
-        """
-        Update belief state and log-joint for a single observation
-        """
-        ix_max = jnp.nanargmax(bel.log_joint)
-        bel_prior = jax.tree.map(lambda x: x[ix_max], bel)
-        dim = bel_prior.mean.shape[0]
-        new_cov = jnp.eye(dim) / self.shock
-        new_mean = bel_prior.mean
-        bel_prior = bel_prior.replace(
-            mean=new_mean * self.shrink,
-            cov=new_cov,
-            log_joint=bel_prior.log_joint,
-            runlength=bel_prior.runlength
-        )
-
-        log_joint, top_indices = self.update_log_joint(y, X, bel, bel_prior)
-        bel_posterior = self.update_bel_indices(y, X, bel, bel_prior, top_indices)
-
-        bel_posterior = self.update_runlengths(bel_posterior, top_indices)
-        bel_posterior = bel_posterior.replace(log_joint=log_joint)
-
-        out = callback_fn(bel_posterior, bel, y, X, top_indices)
-
-        return bel_posterior, out
-
-
 class ChangepointLocation(ABC):
     """
     Changepoint location detection (CPL)

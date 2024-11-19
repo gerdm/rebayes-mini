@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from jax.flatten_util import ravel_pytree
 from rebayes_mini.states.gaussian import Gaussian
 
-class MomentMatchedLinearGaussian:
+class BaseLinearGaussian:
     def __init__(self, apply_fn):
         """
         apply_fn: function
@@ -92,7 +92,7 @@ class MomentMatchedLinearGaussian:
         return bel, hist
 
 
-class GaussianFilter(MomentMatchedLinearGaussian):
+class LinearGaussianFilter(BaseLinearGaussian):
     def __init__(self, apply_fn, variance=1.0):
         super().__init__(apply_fn)
         self.variance = variance
@@ -104,7 +104,7 @@ class GaussianFilter(MomentMatchedLinearGaussian):
         return self.variance * jnp.eye(1)
 
 
-class MultinomialFilter(MomentMatchedLinearGaussian):
+class MultinomialFilter(BaseLinearGaussian):
     def __init__(self, apply_fn, eps=0.1):
         super().__init__(apply_fn)
         self.eps = eps
