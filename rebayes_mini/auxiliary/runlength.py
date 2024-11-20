@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from abc import ABC, abstractmethod
+from rebayes_mini import callbacks
 
 class Runlength(ABC):
     def __init__(self, p_change, K):
@@ -25,6 +26,23 @@ class Runlength(ABC):
         Update belief state (posterior)
         """
         ...
+
+
+    def get_log_posterior(self, bel):
+        log_posterior = bel.log_joint - jax.nn.logsumexp(bel.log_joint)
+        return log_posterior
+
+    
+    def get_expected_runlength(self, bel):
+        log_posterior = self.get_log_posterior(bel)
+        posterior = jnp.exp(log_posterior)
+        return jnp.nansum(bel.runlength * posterior)
+
+
+    def get_mode_runlength(self, bel):
+        log_posterior = self.get_log_posterior(bel)
+        kmax = jnp.argmax(log_posterior)
+        return bel.runlength[kmax]
 
 
     @partial(jax.vmap, in_axes=(None, None, None, 0))
@@ -73,7 +91,7 @@ class Runlength(ABC):
         bel_posterior = self.update_beliefs(bel, y, X, bel_prior)
         bel_posterior = bel_posterior.replace(log_joint=log_joint_full)
         bel_posterior = jax.tree.map(lambda param: jnp.take(param, top_indices, axis=0), bel_posterior)
-        out = callback_fn(bel_posterior, bel, y, X)
+        out = callback_fn(bel_posterior, bel, y, X, self)
 
         return bel_posterior, out
 
@@ -90,76 +108,9 @@ class Runlength(ABC):
         return bel, hist
 
 
-class MomentMatchedPriorReset(Runlength):
-    """
-    Runlength prior reset (RL-PR)
-    """
-    def __init__(
-            self, p_change, K, filter, moment_match=True
-    ):
-        super().__init__(p_change, K)
-        self.filter = filter
-        self.moment_match = moment_match
-
-    def init_bel(self, mean, cov, log_joint_init, x_init):
-        state_filter = self.filter.init_bel(mean, cov)
-        mean = state_filter.mean
-        cov = state_filter.cov
-
-        bel = states.BOCDPosGaussState(
-                mean=einops.repeat(mean, "i -> k i", k=self.K),
-                cov=einops.repeat(cov, "i j -> k i j", k=self.K),
-                log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(log_joint_init),
-                runlength=jnp.zeros(self.K),
-                last_x=jnp.ones(self.K) * x_init
-        )
-        return bel
-
-    def update_bel(self, y, X, bel):
-        bel, _ = self.filter.step(bel, y, X, callbacks.get_null)
-        return bel
-
-    def log_predictive_density(self, y, X, bel):
-        """
-        compute the log-posterior predictive density
-        of the moment-matched Gaussian
-        """
-        mean  = self.filter.vobs_fn(bel.mean, X, bel).astype(float)
-        Rt = self.filter.observation_covariance
-        Ht = self.filter.jac_obs(bel.mean, X, bel)
-        covariance = Ht @ bel.cov @ Ht.T + Rt
-        mean = jnp.atleast_1d(mean)
-        log_p_pred = distrax.MultivariateNormalFullCovariance(mean, covariance).log_prob(y)
-        return log_p_pred
-
-    @abstractmethod
-    def moment_match_prior(self, bel, y, X, bel_prior):
-        """
-        Moment-match the moments of the prior at time t.
-        """
-        ...
-
-
-    def step(self, y, X, bel, bel_prior, callback_fn):
-        """
-        Update belief state and log-joint for a single observation
-        """
-        bel_prior = jax.lax.cond(
-            self.moment_match,
-            lambda: self.moment_match_prior(bel, y, X, bel_prior),
-            lambda: bel_prior,
-        )
-
-        bel_posterior, out = super().step(y, X, bel, bel_prior, callback_fn)
-        return bel_posterior, out
-
-
-
 class GreedyRunlength(ABC):
-    def __init__(self, p_change, shock, deflate_mean, threshold=0.5):
+    def __init__(self, p_change, threshold=0.5):
         self.p_change = p_change
-        self.shock = shock
-        self.deflate_mean = deflate_mean * 1.0
         self.threshold = threshold
 
 
@@ -181,6 +132,11 @@ class GreedyRunlength(ABC):
         ...
 
 
+    @abstractmethod
+    def conditional_prior(self, bel, bel_prior):
+        ...
+
+
     def compute_log_posterior(self, y, X, bel, bel_prior):
         log_joint_increase = self.log_predictive_density(y, X, bel) + jnp.log1p(-self.p_change)
         log_joint_reset = self.log_predictive_density(y, X, bel_prior) + jnp.log(self.p_change)
@@ -188,6 +144,7 @@ class GreedyRunlength(ABC):
         # Concatenate log_joints
         log_joint = jnp.array([log_joint_reset, log_joint_increase])
         log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
+
         # Compute log-posterior before reducing
         log_posterior_increase = log_joint_increase - jax.nn.logsumexp(log_joint)
         log_posterior_reset = log_joint_reset - jax.nn.logsumexp(log_joint)
@@ -195,25 +152,10 @@ class GreedyRunlength(ABC):
         return log_posterior_increase, log_posterior_reset
 
 
-    def conditional_prior(self, bel, bel_prior):
-        """
-        TODO: Refactor ---  make abstract method. This should be implemented by the child class
-        """
-        gamma = jnp.exp(bel.log_posterior)
-        dim = bel.mean.shape[0]
-        deflate_mean = gamma ** self.deflate_mean
-
-        new_mean = bel.mean * deflate_mean
-        new_cov = bel.cov * gamma ** 2 + (1 - gamma ** 2) * jnp.eye(dim) * self.shock
-        bel = bel.replace(mean=new_mean, cov=new_cov)
-        return bel
-
-
     def step(self, bel, y, X, bel_prior, callback_fn):
         """
         Update belief state and log-joint for a single observation
         """
-
         log_posterior_increase, log_posterior_reset = self.compute_log_posterior(y, X, bel, bel_prior)
         bel_update = bel.replace(runlength=bel.runlength + 1, log_posterior=log_posterior_increase)
         bel_update = self.conditional_prior(bel_update, bel_prior)
@@ -228,7 +170,7 @@ class GreedyRunlength(ABC):
             bel_update, bel_prior
         )
 
-        out = callback_fn(bel_update, bel, y, X)
+        out = callback_fn(bel_update, bel, y, X, self)
         return bel_update, out
 
 

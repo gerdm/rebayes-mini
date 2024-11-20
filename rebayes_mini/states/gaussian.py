@@ -9,6 +9,16 @@ class GaussGreedyRunlenght:
     runlenght: int
     log_posterior: int
 
+    @staticmethod
+    def init_bel(mean, cov, log_posterior_init=0.0):
+        bel = GaussGreedyRunlenght(
+            mean=mean,
+            cov=cov,
+            log_posterior=jnp.array(log_posterior_init),
+            runlenght=jnp.array(0.0),
+        )
+        return bel
+
 
 @chex.dataclass
 class GaussRunlength:

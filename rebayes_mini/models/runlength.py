@@ -1,8 +1,8 @@
-import einops
+import jax
 import jax.numpy as jnp
 from functools import partial
-from rebayes_mini.auxiliary.runlength import Runlength, GreedyRunlength, MomentMatchedPriorReset
-from rebayes_mini.states.gaussian import GaussRunlength
+from rebayes_mini.auxiliary.runlength import Runlength, GreedyRunlength
+from rebayes_mini.states.gaussian import GaussRunlength, GaussGreedyRunlenght
 
 
 class GaussianPriorReset(Runlength):
@@ -10,12 +10,23 @@ class GaussianPriorReset(Runlength):
         super().__init__(p_change, K)
         self.updater = updater
 
+
     def log_predictive_density(self, y, X, bel):
         return self.updater.log_predictive_density(y, X, bel)
+
 
     def update_bel(self, bel, y, X):
         bel = self.updater.update(bel, y, X)
         return bel
+    
+
+    def predict(self, bel, X):
+        yhat_hypotheses = jax.vmap(self.updater.predict_fn, in_axes=(0, None))(bel.mean, X)
+        log_posterior = self.get_log_posterior(bel)
+        posterior = jnp.exp(log_posterior)
+        yhat = jnp.einsum("km,k->m", yhat_hypotheses, posterior)
+        return yhat
+
 
     def init_bel(self, mean, cov, log_joint_init=0.0):
         """
@@ -28,22 +39,15 @@ class GaussianPriorReset(Runlength):
         return bel
 
 
-class GaussianMomentMatchedPriorReset(MomentMatchedPriorReset):
+class GaussianMomentMatchedPriorReset(GaussianPriorReset):
     def __init__(self, updater, p_change, K):
-        super().__init__(p_change, K)
-        self.updater = updater
+        super().__init__(updater, p_change, K)
     
-    def log_predictive_density(self, y, X, bel):
-        return self.updater.log_predictive_density(y, X, bel)
-
-    def update_bel(self, bel, y, X):
-        bel = self.updater.update(bel, y, X)
-        return bel
     
     def moment_match_prior(self, bel, y, X, bel_prior):
-        weights_prior = bel.log_joint - jax.nn.logsumexp(bel.log_joint)
-        weights_prior = jnp.exp(weights_prior) * self.p_change
-        bel_hat = jax.vmap(self.update_bel, in_axes=(None, None, 0))(y, X, bel)
+        log_posterior = self.get_log_posterior(bel)
+        weights_prior = jnp.exp(log_posterior) * self.p_change
+        bel_hat = jax.vmap(self.update_bel, in_axes=(0, None, None))(bel, y, X)
 
         # Moment-matched mean
         mean_prior = jnp.einsum("k,kd->d", weights_prior, bel_hat.mean)
@@ -57,9 +61,18 @@ class GaussianMomentMatchedPriorReset(MomentMatchedPriorReset):
         bel_prior = bel_prior.replace(
             mean=mean_prior,
             cov=cov_prior,
-            runlength=0.0
+            runlength=jnp.array(0.0)
         )
         return bel_prior
+
+
+    def step(self, bel, y, X, bel_prior, callback_fn):
+        """
+        Update belief state and log-joint for a single observation
+        """
+        bel_prior = self.moment_match_prior(bel, y, X, bel_prior)
+        bel_posterior, out = super().step(bel, y, X, bel_prior, callback_fn)
+        return bel_posterior, out
 
 
     def init_bel(self, mean, cov, log_joint_init=0.0):
@@ -72,3 +85,36 @@ class GaussianMomentMatchedPriorReset(MomentMatchedPriorReset):
         bel = GaussRunlength.init_bel(self.K, mean, cov, log_joint_init)
         return bel
     
+
+
+class GaussianGreedyOUPriorReset(GreedyRunlength):
+    def __init__(self, updater, p_change, threshold=0.5, shock=1.0, deflate_mean=True):
+        super().__init__(p_change, threshold)
+        self.updater = updater
+        self.deflate_mean = deflate_mean
+        self.shock = shock
+
+    def init_bel(self, mean, cov, log_posterior_init=0.0):
+        """
+        Initialize belief state
+        """
+        state_updater = self.updater.init_bel(mean, cov)
+        mean = state_updater.mean
+        cov = state_updater.cov
+        bel = GaussGreedyRunlenght.init_bel(mean, cov, log_posterior_init)
+        return bel
+
+    def conditional_prior(self, bel):
+        gamma = jnp.exp(bel.log_posterior)
+        dim = bel.mean.shape[0]
+        deflate_mean = gamma ** self.deflate_mean
+
+        new_mean = bel.mean * deflate_mean
+        new_cov = bel.cov * gamma ** 2 + (1 - gamma ** 2) * jnp.eye(dim) * self.shock
+        bel = bel.replace(mean=new_mean, cov=new_cov)
+        return bel
+
+    def update_bel(self, bel, y, X):
+        bel = self.conditional_prior(bel)
+        bel = self.updater.update(bel, y, X)
+        return bel

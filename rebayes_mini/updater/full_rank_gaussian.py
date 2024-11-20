@@ -3,9 +3,10 @@ import distrax
 import jax.numpy as jnp
 from abc import ABC, abstractmethod
 from jax.flatten_util import ravel_pytree
+from rebayes_mini import callbacks
 from rebayes_mini.states.gaussian import Gaussian
 
-class BaseLinearGaussian:
+class BaseLinearGaussian(ABC):
     def __init__(self, apply_fn):
         """
         apply_fn: function
@@ -14,8 +15,8 @@ class BaseLinearGaussian:
         self.apply_fn = apply_fn
 
     def init_bel(self, params, cov=1.0):
-        self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
-        self.grad_link_fn = jax.jacrev(self.link_fn)
+        self.rfn, self.predict_fn, init_params = self._initialise_predict_fn(self.apply_fn, params)
+        self.grad_predict_fn = jax.jacrev(self.predict_fn)
 
         nparams = len(init_params)
         return Gaussian(
@@ -23,14 +24,14 @@ class BaseLinearGaussian:
             cov=jnp.eye(nparams) * cov,
         )
 
-    def _initialise_link_fn(self, apply_fn, params):
+    def _initialise_predict_fn(self, apply_fn, params):
         flat_params, rfn = ravel_pytree(params)
 
         @jax.jit
-        def link_fn(params, x):
+        def predict_fn(params, x):
             return apply_fn(rfn(params), x)
 
-        return rfn, link_fn, flat_params
+        return rfn, predict_fn, flat_params
 
     @abstractmethod
     def mean(self, eta):
@@ -41,10 +42,10 @@ class BaseLinearGaussian:
         ...
 
     def predictive_density(self, bel, X):
-        eta = self.link_fn(bel.mean, X).astype(float)
+        eta = self.predict_fn(bel.mean, X).astype(float)
         mean = self.mean(eta)
         Rt = jnp.atleast_2d(self.covariance(eta))
-        Ht = self.grad_link_fn(bel.mean, X)
+        Ht = self.grad_predict_fn(bel.mean, X)
         covariance = Ht @ bel.cov @ Ht.T + Rt
         mean = jnp.atleast_1d(mean)
         dist = distrax.MultivariateNormalFullCovariance(mean, covariance)
@@ -60,12 +61,12 @@ class BaseLinearGaussian:
 
 
     def update(self, bel, y, x):
-        eta = self.link_fn(bel.mean, x).astype(float)
+        eta = self.predict_fn(bel.mean, x).astype(float)
         yhat = self.mean(eta)
         err = y - yhat
 
         Rt = jnp.atleast_2d(self.covariance(eta))
-        Ht = self.grad_link_fn(bel.mean, x)
+        Ht = self.grad_predict_fn(bel.mean, x)
         St = Ht @ bel.cov @ Ht.T + Rt
         Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
 
@@ -78,7 +79,7 @@ class BaseLinearGaussian:
 
     def step(self, bel, y, x, callback_fn):
         bel_update = self.update(bel, y, x)
-        output = callback_fn(bel_update, bel, y, x)
+        output = callback_fn(bel_update, bel, y, x, self)
         return bel_update, output
 
     def scan(self, bel, y, X, callback_fn=None):
