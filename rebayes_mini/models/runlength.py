@@ -94,6 +94,11 @@ class GaussianGreedyOUPriorReset(GreedyRunlength):
         self.deflate_mean = deflate_mean
         self.shock = shock
 
+
+    def log_predictive_density(self, y, X, bel):
+        return self.updater.log_predictive_density(y, X, bel)
+
+
     def init_bel(self, mean, cov, log_posterior_init=0.0):
         """
         Initialize belief state
@@ -118,3 +123,7 @@ class GaussianGreedyOUPriorReset(GreedyRunlength):
         bel = self.conditional_prior(bel)
         bel = self.updater.update(bel, y, X)
         return bel
+
+    def predict(self, bel, X):
+        yhat = self.updater.predict_fn(bel.mean, X)
+        return yhat

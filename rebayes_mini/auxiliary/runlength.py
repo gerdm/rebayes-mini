@@ -158,8 +158,7 @@ class GreedyRunlength(ABC):
         """
         log_posterior_increase, log_posterior_reset = self.compute_log_posterior(y, X, bel, bel_prior)
         bel_update = bel.replace(runlength=bel.runlength + 1, log_posterior=log_posterior_increase)
-        bel_update = self.conditional_prior(bel_update, bel_prior)
-        bel_update = self.update_bel(y, X, bel_update)
+        bel_update = self.update_bel(bel_update, y, X)
 
         posterior_increase = jnp.exp(log_posterior_increase)
         bel_prior = bel_prior.replace(log_posterior=log_posterior_reset)

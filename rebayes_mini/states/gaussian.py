@@ -6,7 +6,7 @@ import jax.numpy as jnp
 class GaussGreedyRunlenght:
     mean: chex.Array
     cov: chex.Array
-    runlenght: int
+    runlength: int
     log_posterior: int
 
     @staticmethod
@@ -15,7 +15,7 @@ class GaussGreedyRunlenght:
             mean=mean,
             cov=cov,
             log_posterior=jnp.array(log_posterior_init),
-            runlenght=jnp.array(0.0),
+            runlength=jnp.array(0.0),
         )
         return bel
 
