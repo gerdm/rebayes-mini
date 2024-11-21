@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-from functools import partial
 from rebayes_mini.auxiliary.runlength import Runlength, GreedyRunlength
 from rebayes_mini.states.gaussian import GaussRunlength, GaussGreedyRunlenght
 

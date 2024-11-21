@@ -16,3 +16,13 @@ def get_predicted_bel(bel_update, bel_prev, y, x, agent, *args, **kwargs):
 
 def get_predicted_mean(bel_update, bel_prev, y, x, agent, *args, **kwargs):
     return bel_prev.mean
+
+
+def get_prediction_and_error(bel_update, bel_prev, y, x, agent):
+    pred = agent.predict(bel_prev, x)
+    
+    out = {
+        "err": pred - y,
+        "pred": pred
+    }
+    return out

@@ -4,13 +4,13 @@ import jax.numpy as jnp
 from abc import ABC, abstractmethod
 from jax.flatten_util import ravel_pytree
 from rebayes_mini import callbacks
-from rebayes_mini.states.gaussian import Gaussian
+from rebayes_mini.states.gaussian import Gauss
 
 class BaseLinearGaussian(ABC):
     def __init__(self, apply_fn):
         """
         apply_fn: function
-            Maps state and observation to the natural parameters
+            Maps state and observation to output parameters
         """
         self.apply_fn = apply_fn
 
@@ -19,7 +19,7 @@ class BaseLinearGaussian(ABC):
         self.grad_predict_fn = jax.jacrev(self.predict_fn)
 
         nparams = len(init_params)
-        return Gaussian(
+        return Gauss(
             mean=init_params,
             cov=jnp.eye(nparams) * cov,
         )
@@ -71,16 +71,18 @@ class BaseLinearGaussian(ABC):
         Kt = jnp.linalg.solve(St, Ht @ bel.cov).T
 
         mean_update = bel.mean + Kt @ err
-        # cov_update = bel.cov - Kt @ St @ Kt.T
+
         I = jnp.eye(len(bel.mean))
         cov_update = (I - Kt @ Ht) @ bel.cov @ (I - Kt @ Ht).T + Kt @ Rt @ Kt.T
         bel = bel.replace(mean=mean_update, cov=cov_update)
         return bel
 
+
     def step(self, bel, y, x, callback_fn):
         bel_update = self.update(bel, y, x)
         output = callback_fn(bel_update, bel, y, x, self)
         return bel_update, output
+
 
     def scan(self, bel, y, X, callback_fn=None):
         callback_fn = callbacks.get_null if callback_fn is None else callback_fn

@@ -1161,7 +1161,7 @@ class RobustLinearModelFMBOCD(LinearModelFMBOCD):
         """
         return 1 / jnp.sqrt(1 + residual ** 2 / self.c ** 2)
 
-    def  update_bel_single(self, y, X, bel ):
+    def  update_bel_single(self, y, X, bel):
         """
         Update belief state for a single observation
         """

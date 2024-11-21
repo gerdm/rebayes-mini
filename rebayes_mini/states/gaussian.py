@@ -42,6 +42,14 @@ class GaussRunlength:
 
 
 @chex.dataclass
-class Gaussian:
+class Gauss:
     mean: chex.Array
     cov: chex.Array
+
+    @staticmethod
+    def init_bel(mean, cov):
+        bel = Gauss(
+            mean=mean,
+            cov=cov
+        )
+        return bel
