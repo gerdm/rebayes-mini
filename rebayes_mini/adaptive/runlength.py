@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from abc import ABC, abstractmethod
+from rebayes_mini import callbacks
 from rebayes_mini.states.gaussian import GaussRunlength
 
 class Runlength(ABC):

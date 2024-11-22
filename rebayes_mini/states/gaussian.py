@@ -3,6 +3,38 @@ import einops
 import jax.numpy as jnp
 
 @chex.dataclass
+class Gauss:
+    mean: chex.Array
+    cov: chex.Array
+
+    @staticmethod
+    def init_bel(mean, cov):
+        bel = Gauss(
+            mean=mean,
+            cov=cov
+        )
+        return bel
+
+
+@chex.dataclass
+class GaussCPP:
+    """
+    Gaussian with changepoint probability (CPP)
+    """
+    mean: chex.Array
+    cov: chex.Array
+    eta: float # log probabily
+
+    @staticmethod
+    def init_bel(mean, cov, eta):
+        bel = GaussCPP(
+            mean=mean,
+            cov=cov,
+            eta=eta,
+        )
+        return bel
+
+@chex.dataclass
 class GaussGreedyRunlenght:
     mean: chex.Array
     cov: chex.Array
@@ -40,16 +72,3 @@ class GaussRunlength:
         )
         return bel
 
-
-@chex.dataclass
-class Gauss:
-    mean: chex.Array
-    cov: chex.Array
-
-    @staticmethod
-    def init_bel(mean, cov):
-        bel = Gauss(
-            mean=mean,
-            cov=cov
-        )
-        return bel
