@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from abc import ABC, abstractmethod
-from rebayes_mini import callbacks
+from rebayes_mini.states.gaussian import GaussRunlength
 
 class Runlength(ABC):
     def __init__(self, p_change, K):
@@ -108,78 +108,84 @@ class Runlength(ABC):
         return bel, hist
 
 
-class GreedyRunlength(ABC):
-    def __init__(self, p_change, threshold=0.5):
-        self.p_change = p_change
-        self.threshold = threshold
+class GaussianPriorReset(Runlength):
+    def __init__(self, updater, p_change, K):
+        super().__init__(p_change, K)
+        self.updater = updater
 
 
-    @abstractmethod
-    def init_bel(self, y, X, bel_init):
-        ...
-
-
-    @abstractmethod
     def log_predictive_density(self, y, X, bel):
-        ...
+        return self.updater.log_predictive_density(y, X, bel)
 
 
-    @abstractmethod
-    def update_bel(self, y, X, bel):
+    def update_bel(self, bel, y, X):
+        bel = self.updater.update(bel, y, X)
+        return bel
+    
+
+    def predict(self, bel, X):
+        yhat_hypotheses = jax.vmap(self.updater.predict_fn, in_axes=(0, None))(bel.mean, X)
+        log_posterior = self.get_log_posterior(bel)
+        posterior = jnp.exp(log_posterior)
+        yhat = jnp.einsum("km,k->m", yhat_hypotheses, posterior)
+        return yhat
+
+
+    def init_bel(self, mean, cov, log_joint_init=0.0):
         """
-        Update belief state (posterior)
+        Initialize belief state
         """
-        ...
+        state_updater = self.updater.init_bel(mean, cov)
+        mean = state_updater.mean
+        cov = state_updater.cov
+        bel = GaussRunlength.init_bel(self.K, mean, cov, log_joint_init)
+        return bel
 
 
-    @abstractmethod
-    def conditional_prior(self, bel, bel_prior):
-        ...
+class GaussianMomentMatchedPriorReset(GaussianPriorReset):
+    def __init__(self, updater, p_change, K):
+        super().__init__(updater, p_change, K)
+    
+    
+    def moment_match_prior(self, bel, y, X, bel_prior):
+        log_posterior = self.get_log_posterior(bel)
+        weights_prior = jnp.exp(log_posterior) * self.p_change
+        bel_hat = jax.vmap(self.update_bel, in_axes=(0, None, None))(bel, y, X)
 
+        # Moment-matched mean
+        mean_prior = jnp.einsum("k,kd->d", weights_prior, bel_hat.mean)
+        # Moment-matched covariance
+        E2 = bel_hat.cov + jnp.einsum("ki,kj->kij", bel_hat.mean, bel_hat.mean)
+        cov_prior = (
+            jnp.einsum("k,kij->ij", weights_prior, E2) -
+            jnp.einsum("i,j->ij", mean_prior, mean_prior)
+        )
 
-    def compute_log_posterior(self, y, X, bel, bel_prior):
-        log_joint_increase = self.log_predictive_density(y, X, bel) + jnp.log1p(-self.p_change)
-        log_joint_reset = self.log_predictive_density(y, X, bel_prior) + jnp.log(self.p_change)
-
-        # Concatenate log_joints
-        log_joint = jnp.array([log_joint_reset, log_joint_increase])
-        log_joint = jnp.nan_to_num(log_joint, nan=-jnp.inf, neginf=-jnp.inf)
-
-        # Compute log-posterior before reducing
-        log_posterior_increase = log_joint_increase - jax.nn.logsumexp(log_joint)
-        log_posterior_reset = log_joint_reset - jax.nn.logsumexp(log_joint)
-
-        return log_posterior_increase, log_posterior_reset
+        bel_prior = bel_prior.replace(
+            mean=mean_prior,
+            cov=cov_prior,
+            runlength=jnp.array(0.0)
+        )
+        return bel_prior
 
 
     def step(self, bel, y, X, bel_prior, callback_fn):
         """
         Update belief state and log-joint for a single observation
         """
-        log_posterior_increase, log_posterior_reset = self.compute_log_posterior(y, X, bel, bel_prior)
-        bel_update = bel.replace(runlength=bel.runlength + 1, log_posterior=log_posterior_increase)
-        bel_update = self.update_bel(bel_update, y, X)
-
-        posterior_increase = jnp.exp(log_posterior_increase)
-        bel_prior = bel_prior.replace(log_posterior=log_posterior_reset)
-
-        no_changepoint = posterior_increase >= self.threshold
-        bel_update = jax.tree.map(
-            lambda update, prior: update * no_changepoint + prior * (1 - no_changepoint),
-            bel_update, bel_prior
-        )
-
-        out = callback_fn(bel_update, bel, y, X, self)
-        return bel_update, out
+        bel_prior = self.moment_match_prior(bel, y, X, bel_prior)
+        bel_posterior, out = super().step(bel, y, X, bel_prior, callback_fn)
+        return bel_posterior, out
 
 
-    def scan(self, bel, y, X, callback_fn=None):
-        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
-        bel_prior = bel
-        def _step(bel, yX):
-            y, X = yX
-            bel, out = self.step(bel, y, X, bel_prior, callback_fn)
-            return bel, out
+    def init_bel(self, mean, cov, log_joint_init=0.0):
+        """
+        Initialize belief state
+        """
+        state_updater = self.updater.init_bel(mean, cov)
+        mean = state_updater.mean
+        cov = state_updater.cov
+        bel = GaussRunlength.init_bel(self.K, mean, cov, log_joint_init)
+        return bel
+    
 
-        bel, hist = jax.lax.scan(_step, bel, (y, X))
-        return bel, hist
