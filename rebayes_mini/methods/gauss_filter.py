@@ -302,10 +302,11 @@ class GaussianFilter(ExpfamFilter):
 
 
 class BernoulliFilter(ExpfamFilter):
-    def __init__(self, apply_fn, dynamics_covariance):
+    def __init__(self, apply_fn, dynamics_covariance, eps=1e-4):
         super().__init__(
             apply_fn, self._log_partition, self._suff_stat, dynamics_covariance
         )
+        self.eps = eps
 
     @partial(jax.jit, static_argnums=(0,))
     def _log_partition(self, eta):
@@ -315,6 +316,12 @@ class BernoulliFilter(ExpfamFilter):
     def _suff_stat(self, y):
         return y
 
+    def mean(self, eta):
+        return jax.nn.sigmoid(eta)
+
+    def covariance(self, eta):
+        mean = self.mean(eta)
+        return mean * (1 - mean) + self.eps
 
 class MultinomialFilter(ExpfamFilter):
     def __init__(self, apply_fn, dynamics_covariance, eps=0.1):
