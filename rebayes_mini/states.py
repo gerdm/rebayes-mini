@@ -7,6 +7,14 @@ class GaussState:
 
 
 @chex.dataclass
+class PULSEGaussState:
+    mean_hidden: chex.Array
+    cov_hidden: chex.Array
+    mean_last: chex.Array
+    cov_last: chex.Array
+
+
+@chex.dataclass
 class BOCDPosGaussState:
     """
     State for a
