@@ -176,7 +176,6 @@ class SubspaceLastLayerFilter:
         mean_hidden = bel.mean_hidden + Kt_hidden_prime
         mean_last = bel.mean_last + Kt_last_prime
 
-        import pdb; pdb.set_trace()
 
         bel = bel.replace(
             mean_hidden=mean_hidden,
@@ -184,7 +183,6 @@ class SubspaceLastLayerFilter:
             mean_last=mean_last,
             cov_last=cov_last,
         )
-        # return bel, (Kt_hidden, Kt_hidden_prime)
         return bel
 
     def step(self, bel, y, x, callback_fn):
