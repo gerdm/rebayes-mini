@@ -68,9 +68,9 @@ class SubspaceLastLayerFilter:
         nparams_last = len(init_params_last)
         return PULSEGaussState(
             mean_hidden=init_params_hidden,
-            cov_hidden=jnp.eye(nparams_hidden) * cov_hidden,
+            prec_hidden=jnp.eye(nparams_hidden) / cov_hidden,
             mean_last=init_params_last,
-            cov_last=jnp.eye(nparams_last) * cov_last,
+            prec_last=jnp.eye(nparams_last) / cov_last,
         )
    
     def _initialise_link_fn(self, apply_fn_hidden, apply_fn_last, params_hidden, params_last):
@@ -103,24 +103,27 @@ class SubspaceLastLayerFilter:
 
         return rfn_hidden, rfn_last, link_fn, flat_params_hidden, flat_params_last
 
+    def inflate_inv(self, A, c):
+        I = jnp.eye(len(A))
+        A_new = A - c * A @ jnp.linalg.solve(I + c * A, A)
+        return A_new
+
     def _predict(self, bel):
         # Hidden parameters
         nparams_hidden = len(bel.mean_hidden)
-        I_hidden = jnp.eye(nparams_hidden)
         mean_hidden = bel.mean_hidden
-        cov_hidden = bel.cov_hidden + self.dynamics_covariance_hidden * I_hidden
+        prec_hidden = self.inflate_inv(bel.prec_hidden, self.dynamics_covariance_hidden)
 
         # Last-layer parameters
         nparams_last = len(bel.mean_last)
-        I_last = jnp.eye(nparams_last)
         mean_last = bel.mean_last
-        cov_last = bel.cov_last + self.dynamics_covariance_last * I_last
+        prec_last = self.inflate_inv(bel.prec_last, self.dynamics_covariance_last)
 
         bel = bel.replace(
             mean_hidden=mean_hidden,
-            cov_hidden=cov_hidden,
+            prec_hidden=prec_hidden,
             mean_last=mean_last,
-            cov_last=cov_last,
+            prec_last=prec_last,
         )
         return bel
 
@@ -144,8 +147,7 @@ class SubspaceLastLayerFilter:
         # cov_hidden = jnp.einsum("ij,jk,lk->il", Kt_hidden, St_hidden, Kt_hidden)
         # cov_hidden = (I_hidden - Kt_hidden @ Ht_hidden) @ bel.cov_hidden @ (I_hidden - Kt_hidden @ Ht_hidden).T + Kt_hidden @ Rt @ Kt_hidden.T
 
-        prec_hidden = jnp.linalg.inv(bel.cov_hidden) + Ht_hidden.T @ Rt_inv @ Ht_hidden
-        cov_hidden = jnp.linalg.inv(prec_hidden)
+        prec_hidden = bel.prec_hidden + Ht_hidden.T @ Rt_inv @ Ht_hidden
 
         # update last-layer parameters
         I_last = jnp.eye(len(bel.mean_last))
@@ -154,8 +156,7 @@ class SubspaceLastLayerFilter:
         # cov_last = jnp.einsum("ij,jk,lk->il", Kt_last, St_last, Kt_last)
         # cov_last = (I_last - Kt_last @ Ht_last) @ bel.cov_last @ (I_last - Kt_last @ Ht_last).T + Kt_last @ Rt @ Kt_last.T
 
-        prec_last = jnp.linalg.inv(bel.cov_last) + Ht_last.T @ Rt_inv @ Ht_last
-        cov_last = jnp.linalg.inv(prec_last)
+        prec_last = bel.prec_last + Ht_last.T @ Rt_inv @ Ht_last
 
         Kt_hidden, *_ = jnp.linalg.lstsq(prec_hidden, Ht_hidden.T @ Rt_inv)
         Kt_last, *_ = jnp.linalg.lstsq(prec_last, Ht_last.T @ Rt_inv)
@@ -179,9 +180,9 @@ class SubspaceLastLayerFilter:
 
         bel = bel.replace(
             mean_hidden=mean_hidden,
-            cov_hidden=cov_hidden,
+            prec_hidden=prec_hidden,
             mean_last=mean_last,
-            cov_last=cov_last,
+            prec_last=prec_last,
         )
         return bel
 
