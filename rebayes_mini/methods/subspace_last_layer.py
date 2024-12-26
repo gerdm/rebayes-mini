@@ -139,35 +139,44 @@ class SubspaceLastLayerFilter:
         
         # update hidden parameters
         I_hidden = jnp.eye(len(bel.mean_hidden))
-        St_hidden = Ht_hidden @ bel.cov_hidden @ Ht_hidden.T + Rt
-        Kt_hidden = jnp.linalg.solve(St_hidden, Ht_hidden @ bel.cov_hidden).T
+        # St_hidden = Ht_hidden @ bel.cov_hidden @ Ht_hidden.T + Rt
+        # Kt_hidden = jnp.linalg.solve(St_hidden, Ht_hidden @ bel.cov_hidden).T
         # cov_hidden = jnp.einsum("ij,jk,lk->il", Kt_hidden, St_hidden, Kt_hidden)
-        cov_hidden = (I_hidden - Kt_hidden @ Ht_hidden) @ bel.cov_hidden @ (I_hidden - Kt_hidden @ Ht_hidden).T + Kt_hidden @ Rt @ Kt_hidden.T
+        # cov_hidden = (I_hidden - Kt_hidden @ Ht_hidden) @ bel.cov_hidden @ (I_hidden - Kt_hidden @ Ht_hidden).T + Kt_hidden @ Rt @ Kt_hidden.T
 
-        # cov_hidden = jnp.linalg.inv(jnp.linalg.inv(bel.cov_hidden) + Ht_hidden.T @ Rt_inv @ Ht_hidden)
+        prec_hidden = jnp.linalg.inv(bel.cov_hidden) + Ht_hidden.T @ Rt_inv @ Ht_hidden
+        cov_hidden = jnp.linalg.inv(prec_hidden)
 
         # update last-layer parameters
         I_last = jnp.eye(len(bel.mean_last))
-        St_last = Ht_last @ bel.cov_last @ Ht_last.T + Rt
-        Kt_last = jnp.linalg.solve(St_last, Ht_last @ bel.cov_last).T
+        # St_last = Ht_last @ bel.cov_last @ Ht_last.T + Rt
+        # Kt_last = jnp.linalg.solve(St_last, Ht_last @ bel.cov_last).T
         # cov_last = jnp.einsum("ij,jk,lk->il", Kt_last, St_last, Kt_last)
-        cov_last = (I_last - Kt_last @ Ht_last) @ bel.cov_last @ (I_last - Kt_last @ Ht_last).T + Kt_last @ Rt @ Kt_last.T
+        # cov_last = (I_last - Kt_last @ Ht_last) @ bel.cov_last @ (I_last - Kt_last @ Ht_last).T + Kt_last @ Rt @ Kt_last.T
 
-        # cov_last = jnp.linalg.inv(jnp.linalg.inv(bel.cov_last) + Ht_last.T @ Rt_inv @ Ht_last)
+        prec_last = jnp.linalg.inv(bel.cov_last) + Ht_last.T @ Rt_inv @ Ht_last
+        cov_last = jnp.linalg.inv(prec_last)
 
-        # Kt_hidden = cov_hidden @ Ht_hidden.T @ Rt_inv
-        # Kt_last = cov_last @ Ht_last.T @ Rt_inv
+        Kt_hidden, *_ = jnp.linalg.lstsq(prec_hidden, Ht_hidden.T @ Rt_inv)
+        Kt_last, *_ = jnp.linalg.lstsq(prec_last, Ht_last.T @ Rt_inv)
 
         # Compute updated gain matrices
         Kt_hidden_prime = I_hidden - Kt_hidden @ Ht_last @ Kt_last @ Ht_hidden
-        Kt_hidden_prime = jnp.linalg.solve(Kt_hidden_prime, Kt_hidden @ (I_obs - Ht_last @ Kt_last))
+        Kt_hidden_prime, *_ = jnp.linalg.lstsq(Kt_hidden_prime, Kt_hidden @ (I_obs  - Ht_last @ Kt_last) @ err)
+        # Kt_hidden_prime = Kt_hidden @ (I_obs  - Ht_last @ Kt_last) @ err
 
-        Kt_last_prime = I_last - Kt_last @ Ht_hidden @ Kt_hidden @ Ht_last
-        Kt_last_prime = jnp.linalg.solve(Kt_last_prime, Kt_last @ (I_obs - Ht_hidden @ Kt_hidden))
+        Kt_last_prime = I_last  - Kt_last @ Ht_hidden @ Kt_hidden @ Ht_last
+        Kt_last_prime, *_ = jnp.linalg.lstsq(Kt_last_prime, Kt_last @ (I_obs  - Ht_hidden @ Kt_hidden) @ err)
+        # Kt_last_prime = Kt_last @ (I_obs  - Ht_hidden @ Kt_hidden) @ err
 
         # Update joint mean
-        mean_hidden = bel.mean_hidden + Kt_hidden @ err
-        mean_last = bel.mean_last + Kt_last @ err
+        # mean_hidden = bel.mean_hidden + Kt_hidden @ err
+        # mean_last = bel.mean_last + Kt_last @ err
+
+        mean_hidden = bel.mean_hidden + Kt_hidden_prime
+        mean_last = bel.mean_last + Kt_last_prime
+
+        import pdb; pdb.set_trace()
 
         bel = bel.replace(
             mean_hidden=mean_hidden,
@@ -175,6 +184,7 @@ class SubspaceLastLayerFilter:
             mean_last=mean_last,
             cov_last=cov_last,
         )
+        # return bel, (Kt_hidden, Kt_hidden_prime)
         return bel
 
     def step(self, bel, y, x, callback_fn):
