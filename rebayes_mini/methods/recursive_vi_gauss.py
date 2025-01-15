@@ -7,6 +7,19 @@ from rebayes_mini import callbacks
 from functools import partial
 from jax.flatten_util import ravel_pytree
 
+def sample_multivariate_gaussian_precision(key, mean, precision, n_samples):
+    """
+    Let x ~ N(0, Sigma) and Sigma = LL^T, then L*eps ~ N(0, Sigma)
+    with eps ~ N(0, I).
+    If we know Sigma^{-1} = L^{-T} L^{-1}.
+    Then, solving L^{-1}x = eps yields the desired result.
+    """
+    M, _ = precision.shape
+    Linv = jnp.linalg.cholesky(precision, upper=False) # lower triangular matrix
+    rvs = jax.random.normal(key, (M, n_samples))
+    rvs = jnp.linalg.solve(Linv, rvs)
+    return rvs.T + mean
+
 @chex.dataclass
 class RVGAState:
     mean: chex.Array
@@ -76,12 +89,13 @@ class RVGA(ABC):
         return jax.hessian(self.log_partition)(eta).squeeze()
     
     def _step_inner(self, bel, key, x, y):
-        bel_covariance = jnp.linalg.inv(bel.precision)
-        params_sample = jax.random.multivariate_normal(key, bel.mean, bel_covariance, (self.n_samples,))
+        # bel_covariance = jnp.linalg.inv(bel.precision)
+        # params_sample = jax.random.multivariate_normal(key, bel.mean, bel_covariance, (self.n_samples,))
+        params_sample = sample_multivariate_gaussian_precision(key, bel.mean, bel.precision, self.n_samples)
         mean_grad_logprob = jax.vmap(self.grad_log_prob, in_axes=(0, None, None))(params_sample, y, x).mean(axis=0)
         mean_hessian_logprob = jax.vmap(self.hessian_log_prob, in_axes=(0, None, None))(params_sample, y, x).mean(axis=0)
 
-        mean_new = bel.mean + bel_covariance @ mean_grad_logprob
+        mean_new = bel.mean + jnp.linalg.solve(bel.precision, mean_grad_logprob)
         prec_new = bel.precision - mean_hessian_logprob
 
         bel = bel.replace(
