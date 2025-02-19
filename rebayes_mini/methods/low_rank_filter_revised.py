@@ -44,7 +44,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         self.grad_link_fn = jax.jacrev(self.link_fn)
         nparams = len(init_params)
 
-        low_rank = jax.random.normal(key, (self.rank, nparams)) * 1e-4
+        low_rank = jax.random.normal(key, (self.rank, nparams))
         # low_rank = jnp.ones((self.rank, nparams))
 
         return LoFiState(
@@ -61,8 +61,8 @@ class ExpfamFilter(kf.ExpfamFilter):
         singular_vectors, singular_values, _ = jnp.linalg.svd(Z @ Z.T, hermitian=True, full_matrices=False)
         singular_values = jnp.sqrt(singular_values) # square root of eigenvalues
 
-        P = jnp.diag(1/singular_values) @ singular_vectors.T @ Z # solving for right singular vectors
-        P = jnp.diag(singular_values[:self.rank]) @ P[:self.rank] # keep top-d singular values and top-d singular vectors
+        P = jnp.einsum("i,ji,jk->ik", 1 / singular_values, singular_vectors, Z)
+        P = jnp.einsum("d,dD->dD", singular_values[:self.rank], P[:self.rank])
         return P
 
 
