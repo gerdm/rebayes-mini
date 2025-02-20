@@ -39,15 +39,12 @@ class ExpfamFilter(kf.ExpfamFilter):
         self.rank = rank
         self.inflate_diag = inflate_diag
 
-    def init_bel(self, key, params, cov=1.0):
+    def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
         self.grad_link_fn = jax.jacrev(self.link_fn)
         nparams = len(init_params)
 
         low_rank = jnp.fill_diagonal(jnp.zeros((self.rank, nparams)), jnp.ones(nparams), inplace=False) * cov
-        # low_rank = jax.random.normal(key, (self.rank, nparams))
-        # low_rank = jnp.fill_diagonal(low_rank, jnp.ones(nparams) * cov, inplace=False)
-        # low_rank = jnp.ones((self.rank, nparams))
 
         return LoFiState(
             mean=init_params,
@@ -60,8 +57,9 @@ class ExpfamFilter(kf.ExpfamFilter):
         P^T P approx A + B
         """
         Z = jnp.r_[A, B]
-        singular_vectors, singular_values, _ = jnp.linalg.svd(Z @ Z.T, hermitian=True, full_matrices=False)
-        singular_values = jnp.sqrt(singular_values + self.dynamics_covariance) # square root of eigenvalues
+        ZZ = jnp.einsum("ij,kj->ik", Z, Z)
+        singular_vectors, singular_values, _ = jnp.linalg.svd(ZZ, hermitian=True, full_matrices=False)
+        singular_values = jnp.sqrt(singular_values) # square root of eigenvalues
 
         P = jnp.einsum("i,ji,jk->ik", 1 / singular_values, singular_vectors, Z)
         P = jnp.einsum("d,dD->dD", singular_values[:self.rank], P[:self.rank])
