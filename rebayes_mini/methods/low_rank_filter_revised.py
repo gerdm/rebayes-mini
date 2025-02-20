@@ -76,14 +76,6 @@ class ExpfamFilter(kf.ExpfamFilter):
         # L = L[:self.rank]
         # low_rank_pred = self.project(low_rank_pred, L)
 
-        # Z = state.low_rank
-        # singular_vectors, singular_values, _ = jnp.linalg.svd(Z @ Z.T, hermitian=True, full_matrices=False)
-        # singular_values = jnp.sqrt(singular_values) # square root of eigenvalues
-
-        # P = jnp.einsum("i,ji,jk->ik", 1 / singular_values, singular_vectors, Z)
-        # P = jnp.einsum("d,dD->dD", singular_values[:self.rank], P[:self.rank])
-
-
         state_pred = state.replace(
             mean=mean_pred,
             low_rank=low_rank_pred,
@@ -102,17 +94,15 @@ class ExpfamFilter(kf.ExpfamFilter):
         C = jnp.r_[W @ Ht.T, Rt_half]
         S_half = jnp.linalg.qr(C, mode="r") # Squared-root of innovation
 
-        # Kalman gain and innovation
+        # transposed Kalman gain and innovation
         Kt = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, Ht))
-        Kt = (Kt @ W.T @ W + Kt * self.dynamics_covariance).T
+        Kt_T = Kt @ W.T @ W + Kt * self.dynamics_covariance
         err = yobs - yhat
-        return Kt, err, Rt_half, Ht
+        return Kt_T, err, Rt_half, Ht
     
-    def _update(self, state, Kt, err, Rt_half, Ht):
-        I = jnp.eye(len(Kt))
-
-        mean_update = state.mean + Kt @ err
-        low_rank_update = self.project(state.low_rank @ (I - Kt @ Ht).T, Rt_half @ Kt.T)
+    def _update(self, state, Kt_T, err, Rt_half, Ht):
+        mean_update = state.mean + jnp.einsum("ij,i->j", Kt_T, err)
+        low_rank_update = self.project(state.low_rank - state.low_rank @ Ht.T @ Kt_T, Rt_half @ Kt_T)
 
         state = state.replace(
             mean=mean_update,
