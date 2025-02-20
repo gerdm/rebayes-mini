@@ -93,8 +93,8 @@ class ExpfamFilter(kf.ExpfamFilter):
         S_half = jnp.linalg.qr(C, mode="r") # Squared-root of innovation
 
         # transposed Kalman gain and innovation
-        Kt = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, Ht))
-        Kt_T = Kt @ W.T @ W + Kt * self.dynamics_covariance
+        Mt = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, Ht))
+        Kt_T = Mt @ W.T @ W + Mt * self.dynamics_covariance
         err = yobs - yhat
         return Kt_T, err, Rt_half, Ht
     
