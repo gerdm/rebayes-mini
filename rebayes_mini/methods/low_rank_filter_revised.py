@@ -10,12 +10,11 @@ class LoFiState:
     """State of the Low Rank Filter"""
     mean: chex.Array
     low_rank: chex.Array
-
+    diagonal: chex.Array
 
 class ExpfamFilter(kf.ExpfamFilter):
     def __init__(
-        self, apply_fn, log_partition, suff_statistic, dynamics_covariance,
-        rank, inflate_diag,
+        self, apply_fn, log_partition, suff_statistic, dynamics_covariance, rank
     ):
         """
         Moment-matched Low-rank Extended Kalman filter
@@ -32,23 +31,22 @@ class ExpfamFilter(kf.ExpfamFilter):
             Additive dynamics covariance to correct for model misspecification
         rank: int
             Dimension of low-rank component
-        inflate_diag: bool
-            Inflate diagonal term based on unaccounted singular components
         """
         super().__init__(apply_fn, log_partition, suff_statistic, dynamics_covariance)
         self.rank = rank
-        self.inflate_diag = inflate_diag
 
     def init_bel(self, params, cov=1.0):
         self.rfn, self.link_fn, init_params = self._initialise_link_fn(self.apply_fn, params)
         self.grad_link_fn = jax.jacrev(self.link_fn)
         nparams = len(init_params)
 
-        low_rank = jnp.fill_diagonal(jnp.zeros((self.rank, nparams)), jnp.ones(nparams), inplace=False) * cov
+        low_rank = jnp.fill_diagonal(jnp.zeros((self.rank, nparams)), jnp.ones(nparams), inplace=False)
+        diag = jnp.ones(nparams) * cov
 
         return LoFiState(
             mean=init_params,
             low_rank=low_rank,
+            diagonal=diag
         )
 
     def project(self, A, B):
@@ -70,13 +68,10 @@ class ExpfamFilter(kf.ExpfamFilter):
         mean_pred = state.mean
         low_rank_pred = state.low_rank
 
-        # L = jnp.eye(len(mean_pred)) * self.dynamics_covariance
-        # L = L[:self.rank]
-        # low_rank_pred = self.project(low_rank_pred, L)
-
         state_pred = state.replace(
             mean=mean_pred,
             low_rank=low_rank_pred,
+            diagonal=state.diagonal + self.dynamics_covariance
         )
 
         return state_pred
@@ -94,7 +89,7 @@ class ExpfamFilter(kf.ExpfamFilter):
 
         # transposed Kalman gain and innovation
         Mt = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, Ht))
-        Kt_T = Mt @ W.T @ W + Mt * self.dynamics_covariance
+        Kt_T = Mt @ W.T @ W + Mt * state.diagonal
         err = yobs - yhat
         return Kt_T, err, Rt_half, Ht
     
@@ -118,10 +113,10 @@ class ExpfamFilter(kf.ExpfamFilter):
 
 
 class BernoulliFilter(ExpfamFilter):
-    def __init__(self, apply_fn, dynamics_covariance, rank, inflate_diag=True):
+    def __init__(self, apply_fn, dynamics_covariance, rank, ):
         super().__init__(
             apply_fn, self._log_partition, self._suff_stat,
-            dynamics_covariance, rank, inflate_diag
+            dynamics_covariance, rank, 
         )
 
     @partial(jax.jit, static_argnums=(0,))
@@ -134,10 +129,10 @@ class BernoulliFilter(ExpfamFilter):
 
 
 class MultinomialFilter(ExpfamFilter):
-    def __init__(self, apply_fn, dynamics_covariance, rank, eps=0.1, inflate_diag=True):
+    def __init__(self, apply_fn, dynamics_covariance, rank, eps=0.1, ):
         super().__init__(
             apply_fn, self._log_partition, self._suff_stat,
-            dynamics_covariance, rank, inflate_diag
+            dynamics_covariance, rank, 
         )
         self.eps = eps
 
@@ -160,9 +155,9 @@ class MultinomialFilter(ExpfamFilter):
 
 
 class GaussianFilter(ExpfamFilter):
-    def __init__(self, apply_fn, dynamics_covariance, rank, variance=1.0, inflate_diag=True):
+    def __init__(self, apply_fn, dynamics_covariance, rank, variance=1.0, ):
         super().__init__(
-            apply_fn, self._log_partition, self._suff_stat, dynamics_covariance, rank, inflate_diag
+            apply_fn, self._log_partition, self._suff_stat, dynamics_covariance, rank, 
         )
         self.variance = variance
 
