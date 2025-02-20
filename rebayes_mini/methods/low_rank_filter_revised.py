@@ -44,7 +44,9 @@ class ExpfamFilter(kf.ExpfamFilter):
         self.grad_link_fn = jax.jacrev(self.link_fn)
         nparams = len(init_params)
 
-        low_rank = jax.random.normal(key, (self.rank, nparams))
+        low_rank = jnp.fill_diagonal(jnp.zeros((self.rank, nparams)), jnp.ones(nparams), inplace=False) * cov
+        # low_rank = jax.random.normal(key, (self.rank, nparams))
+        # low_rank = jnp.fill_diagonal(low_rank, jnp.ones(nparams) * cov, inplace=False)
         # low_rank = jnp.ones((self.rank, nparams))
 
         return LoFiState(
@@ -59,7 +61,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         """
         Z = jnp.r_[A, B]
         singular_vectors, singular_values, _ = jnp.linalg.svd(Z @ Z.T, hermitian=True, full_matrices=False)
-        singular_values = jnp.sqrt(singular_values) # square root of eigenvalues
+        singular_values = jnp.sqrt(singular_values + self.dynamics_covariance) # square root of eigenvalues
 
         P = jnp.einsum("i,ji,jk->ik", 1 / singular_values, singular_vectors, Z)
         P = jnp.einsum("d,dD->dD", singular_values[:self.rank], P[:self.rank])
@@ -70,10 +72,17 @@ class ExpfamFilter(kf.ExpfamFilter):
         mean_pred = state.mean
         low_rank_pred = state.low_rank
 
-        L = jnp.eye(len(mean_pred)) * self.dynamics_covariance
-        L = L[:self.rank]
+        # L = jnp.eye(len(mean_pred)) * self.dynamics_covariance
+        # L = L[:self.rank]
+        # low_rank_pred = self.project(low_rank_pred, L)
 
-        low_rank_pred = self.project(low_rank_pred, L)
+        # Z = state.low_rank
+        # singular_vectors, singular_values, _ = jnp.linalg.svd(Z @ Z.T, hermitian=True, full_matrices=False)
+        # singular_values = jnp.sqrt(singular_values) # square root of eigenvalues
+
+        # P = jnp.einsum("i,ji,jk->ik", 1 / singular_values, singular_vectors, Z)
+        # P = jnp.einsum("d,dD->dD", singular_values[:self.rank], P[:self.rank])
+
 
         state_pred = state.replace(
             mean=mean_pred,
@@ -94,7 +103,8 @@ class ExpfamFilter(kf.ExpfamFilter):
         S_half = jnp.linalg.qr(C, mode="r") # Squared-root of innovation
 
         # Kalman gain and innovation
-        Kt = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, Ht) @ W.T @ W).T
+        Kt = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, Ht))
+        Kt = (Kt @ W.T @ W + Kt * self.dynamics_covariance).T
         err = yobs - yhat
         return Kt, err, Rt_half, Ht
     
