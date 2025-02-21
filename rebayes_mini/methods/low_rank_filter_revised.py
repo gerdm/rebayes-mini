@@ -49,12 +49,12 @@ class ExpfamFilter(kf.ExpfamFilter):
             diagonal=diag
         )
 
-    def project(self, A, B):
+    def project(self, *matrices):
         """
         Create rank-d matrix P such that
         P^T P approx A + B
         """
-        Z = jnp.r_[A, B]
+        Z = jnp.vstack(matrices)
         ZZ = jnp.einsum("ij,kj->ik", Z, Z)
         singular_vectors, singular_values, _ = jnp.linalg.svd(ZZ, hermitian=True, full_matrices=False)
         singular_values = jnp.sqrt(singular_values) # square root of eigenvalues
@@ -84,6 +84,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         Ht = self.grad_link_fn(state.mean, x)
         W = state.low_rank
 
+        # C = jnp.r_[W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half]
         C = jnp.r_[W @ Ht.T, Rt_half]
         S_half = jnp.linalg.qr(C, mode="r") # Squared-root of innovation
 
@@ -95,7 +96,9 @@ class ExpfamFilter(kf.ExpfamFilter):
     
     def _update(self, state, Kt_T, err, Rt_half, Ht):
         mean_update = state.mean + jnp.einsum("ij,i->j", Kt_T, err)
-        low_rank_update = self.project(state.low_rank - state.low_rank @ Ht.T @ Kt_T, Rt_half @ Kt_T)
+        low_rank_update = self.project(
+            state.low_rank - state.low_rank @ Ht.T @ Kt_T, Rt_half @ Kt_T
+        )
 
         state = state.replace(
             mean=mean_update,
