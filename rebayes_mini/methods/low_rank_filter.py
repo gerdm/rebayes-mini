@@ -112,29 +112,28 @@ class ExpfamFilter(kf.ExpfamFilter):
         return log_p_pred
 
 
-    def _predict(self, state):
+    def _predict(self, bel):
         I_lr = jnp.eye(self.rank)
-        mean_pred = state.mean
-        diag_pred = 1 / (1 / state.diagonal + self.dynamics_covariance)
+        mean_pred = bel.mean
+        diag_pred = 1 / (1 / bel.diagonal + self.dynamics_covariance)
 
-        # TODO: can we make this block more efficient?
         C = jnp.einsum("ji,j,jk->ik",
-            state.low_rank, (1 / state.diagonal + diag_pred / state.diagonal ** 2), state.low_rank
+            bel.low_rank, (1 / bel.diagonal - diag_pred / bel.diagonal ** 2), bel.low_rank
         )
         C = jnp.linalg.inv(I_lr + C)
         cholC = jnp.linalg.cholesky(C)
 
         low_rank_pred = jnp.einsum(
             "i,i,ij,jk->ik",
-            diag_pred, 1 / state.diagonal, state.low_rank, cholC
+            diag_pred, 1 / bel.diagonal, bel.low_rank, cholC
         )
 
-        state_pred = state.replace(
+        bel_pred = bel.replace(
             mean=mean_pred,
             diagonal=diag_pred,
             low_rank=low_rank_pred,
         )
-        return state_pred
+        return bel_pred
 
 
     def _svd(self, W):
@@ -211,8 +210,8 @@ class ExpfamFilter(kf.ExpfamFilter):
 
         bel_new = bel_pred.replace(
             mean=mean_new,
-            diagonal=diag_new,
             low_rank=low_rank_new,
+            diagonal=diag_new,
         )
         return bel_new
 
