@@ -1,6 +1,5 @@
 import jax
 import chex
-import distrax
 import jax.numpy as jnp
 from functools import partial
 from rebayes_mini.methods import gauss_filter as kf

@@ -139,14 +139,13 @@ class ExpfamFilter(kf.ExpfamFilter):
     def _svd(self, W):
         """
         Fast implementation of reduced SVD
-        TODO: implement randomised SVD?
 
         See: https://math.stackexchange.com/questions/3685997/how-do-you-compute-the-reduced-svd
         """
         singular_vectors, singular_values, _ = jnp.linalg.svd(W.T @ W, full_matrices=False, hermitian=True)
         singular_values = jnp.sqrt(singular_values)
-        singular_values_inv = jnp.where(singular_values != 0, 1 / singular_values, 0.0)
-        singular_vectors = W @ (singular_vectors * singular_values_inv)
+        singular_values_inv = jnp.where(singular_values != 0.0, 1 / singular_values, 0.0)
+        singular_vectors = jnp.einsum("ij,jk,k->ik", W, singular_vectors, singular_values_inv)
         return singular_values, singular_vectors
 
 
@@ -182,7 +181,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         memory_entry = Ht.T @ At.T
         _, n_out = memory_entry.shape
 
-        low_rank_hat = jnp.concatenate([bel_pred.low_rank, memory_entry], axis=1)
+        low_rank_hat = jnp.c_[bel_pred.low_rank, memory_entry]
         inverse_diag = 1 / bel_pred.diagonal
         Gt = jnp.linalg.pinv(
             jnp.eye(self.rank + n_out) +
