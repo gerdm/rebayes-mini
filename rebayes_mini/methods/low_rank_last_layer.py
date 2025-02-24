@@ -3,6 +3,7 @@ import chex
 import jax.numpy as jnp
 from functools import partial
 from jax.flatten_util import ravel_pytree
+from rebayes_mini import callbacks
 
 @chex.dataclass
 class OLLIState:
@@ -14,10 +15,12 @@ class OLLIState:
 
 
 class LowRankLastLayer:
-    def __init__(self, apply_fn, rank, dynamics_hidden):
+    def __init__(self, apply_fn, covariance_fn, rank, dynamics_hidden, dynamics_last):
         self.apply_fn = apply_fn
+        self.covariance = covariance_fn
         self.rank = rank
         self.dynamics_hidden = dynamics_hidden
+        self.dynamics_last = dynamics_last
 
     def _initialise_fn(self, apply_fn, params):
         """
@@ -55,7 +58,7 @@ class LowRankLastLayer:
             loading_last=loading_last
         )
 
-    def add_sqrt(self, *matrices):
+    def add_sqrt(self, matrices):
         """
         Obtain an upper-triangular matrix C such that
         C^T C = A1 + A2 + ... + Ak
@@ -65,7 +68,7 @@ class LowRankLastLayer:
         C_half = jnp.linalg.qr(C_half, mode="r") # Squared-root of innovation
         return C_half
 
-    def add_project(self, *matrices):
+    def add_project(self, matrices):
         """
         Obtain rank-d matrix P such that
         P^T P approx A1 + A2 + ... + Ak
@@ -81,7 +84,13 @@ class LowRankLastLayer:
     
 
     def predict(self, bel):
-        ...
+        return bel
+        dimlast = len(bel.mean_last)
+        loading_last = self.add_sqrt([bel.loading_last, self.dynamics_last * jnp.eye(dimlast)])
+        bel = bel.replace(
+            loading_last=loading_last
+        )
+        return bel
     
     def innovation_and_gain(self, bel, y, x):
         yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x)
@@ -95,13 +104,13 @@ class LowRankLastLayer:
         err = y - yhat
 
         # Upper-triangular cholesky decomposition of the innovation
-        S_half = self.add_sqrt(bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half)
+        S_half = self.add_sqrt([bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half])
 
         # Transposed gain matrices
         M_hidden = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_hidden))
         M_last = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_last))
 
-        gain_hidden = M_hidden @ bel.loading_hidden.T @ bel.loading_hiden + M_hidden * self.dynamics_hidden
+        gain_hidden = M_hidden @ bel.loading_hidden.T @ bel.loading_hidden + M_hidden * self.dynamics_hidden
         gain_last = M_last @ bel.loading_last.T @ bel.loading_last
 
         return err, gain_hidden, gain_last, J_hidden, J_last, R_half
@@ -112,12 +121,36 @@ class LowRankLastLayer:
         mean_hidden = bel.mean_hidden + jnp.einsum("ij,i->j", gain_hidden, err)
         mean_last = bel.mean_last + jnp.einsum("ij,i->j", gain_last, err)
 
-        loading_hidden = self.add_project(
-            bel.loading_hidden - bel.loading_hidden 
-        )
-        raise NotImplementedError("Not finished")
+        loading_hidden = self.add_project([
+            bel.loading_hidden - bel.loading_hidden @ J_hidden.T @ gain_hidden, R_half @ gain_hidden
+        ])
+        loading_last = self.add_sqrt([
+            bel.loading_last - bel.loading_last @ J_last.T @ gain_last, R_half @ gain_last
+        ])
 
         bel = bel.replace(
             mean_hidden=mean_hidden,
             mean_last=mean_last,
+            loading_hidden=loading_hidden,
+            loading_last=loading_last,
         )
+        return bel
+
+
+    def step(self, bel, y, x, callback_fn):
+        bel_pred = self.predict(bel)
+        bel_update = self.update(bel_pred, y, x)
+
+        output = callback_fn(bel_update, bel_pred, y, x)
+        return bel_update, output
+
+
+    def scan(self, bel, y, X, callback_fn=None):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        def _step(bel, yX):
+            y, x = yX
+            bel, out = self.step(bel, y, x, callback_fn)
+            return bel, out
+
+        bel, hist = jax.lax.scan(_step, bel, (y, X))
+        return bel, hist
