@@ -109,3 +109,15 @@ class LowRankLastLayer:
     def update(self, bel, y, x):
         err, gain_hidden, gain_last, J_hidden, J_last, R_half = self.innovation_and_gain(bel, y, x)
 
+        mean_hidden = bel.mean_hidden + jnp.einsum("ij,i->j", gain_hidden, err)
+        mean_last = bel.mean_last + jnp.einsum("ij,i->j", gain_last, err)
+
+        loading_hidden = self.add_project(
+            bel.loading_hidden - bel.loading_hidden 
+        )
+        raise NotImplementedError("Not finished")
+
+        bel = bel.replace(
+            mean_hidden=mean_hidden,
+            mean_last=mean_last,
+        )
