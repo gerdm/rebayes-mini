@@ -12,7 +12,17 @@ class GaussState:
     mean: chex.Array
     cov: chex.Array
 
-class BaseGaussFilter:
+@chex.dataclass
+class GaussStateSqr:
+    mean: chex.Array
+    W: chex.Array
+
+
+class BaseFilter:
+    def __init__(self, mean_fn, cov_fn, dynamics_covariance):
+        ...
+
+class ExtendedFilter:
     def __init__(self, mean_fn, cov_fn, dynamics_covariance, n_inner=1):
         """
         apply_fn: function
@@ -90,10 +100,96 @@ class BaseGaussFilter:
         _update = lambda _, bel: self.update(bel, bel_pred, y, x)
         bel_update = jax.lax.fori_loop(0, self.n_inner, _update, bel_pred, unroll=self.n_inner)
 
-        # bel_update = bel_pred
-        # for i in range(5):
-        #     bel_update = self.update(bel_update, bel_pred, y, x)
+        output = callback_fn(bel_update, bel_pred, y, x)
+        return bel_update, output
 
+    def scan(self, bel, y, X, callback_fn=None):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        def _step(bel, yX):
+            y, x = yX
+            bel, out = self.step(bel, y, x, callback_fn)
+            return bel, out
+
+        bel, hist = jax.lax.scan(_step, bel, (y, X))
+        return bel, hist
+
+
+class SquareRootFilter:
+    def __init__(self, mean_fn, cov_fn, dynamics_covariance, n_inner=1):
+        """
+        apply_fn: function
+            Maps state and observation to the natural parameters
+        """
+        self.mean_fn_og = mean_fn
+        self.cov_fn = cov_fn
+        self.dynamics_covariance = dynamics_covariance
+        self.n_inner = n_inner
+
+    def init_bel(self, params, cov=1.0):
+        self.rfn, self.mean_fn, init_params = self._initialise_flat_fn(self.mean_fn_og, params)
+        self.grad_mean = jax.jacrev(self.mean_fn)
+
+        nparams = len(init_params)
+        return GaussStateSqr(
+            mean=init_params,
+            W=jnp.linalg.cholesky(jnp.eye(nparams) * cov, upper=True),
+        )
+
+    def _initialise_flat_fn(self, apply_fn, params):
+        flat_params, rfn = ravel_pytree(params)
+
+        @jax.jit
+        def mean_fn(params, x):
+            return apply_fn(rfn(params), x)
+
+        return rfn, mean_fn, flat_params
+
+    def add_sqrt(self, matrices):
+        """
+        Obtain an upper-triangular matrix C such that
+        C^T C = A1 + A2 + ... + Ak
+        for (A1, A2, ..., Ak) = matrices
+        """
+        C_half = jnp.vstack(matrices)
+        C_half = jnp.linalg.qr(C_half, mode="r") # Squared-root of innovation
+        return C_half
+
+    def predict(self, bel):
+        nparams = len(bel.mean)
+        I = jnp.eye(nparams)
+        pmean_pred = bel.mean
+        Q_half = jnp.sqrt(self.dynamics_covariance) * I
+        W_pred = self.add_sqrt([bel.W, Q_half])
+        bel = bel.replace(mean=pmean_pred, W=W_pred)
+        return bel
+
+    def update(self, bel, bel_pred, y, x):
+        yhat = self.mean_fn(bel.mean, x).astype(float)
+        Rt = jnp.atleast_2d(self.cov_fn(yhat))
+        R_half = jnp.linalg.cholesky(Rt)
+
+        # Innovation update
+        Ht = self.grad_mean(bel.mean, x)
+
+        S_half = self.add_sqrt([bel_pred.W @ Ht.T, R_half])
+        M = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, Ht))
+        K_transposed = M @ bel_pred.W.T @ bel_pred.W
+
+        err = y - yhat - Ht @ (bel_pred.mean - bel.mean)
+
+        mean_update = bel_pred.mean + jnp.einsum("ij,i->j", K_transposed, err)
+        W_update = self.add_sqrt([
+            bel_pred.W - bel_pred.W @ Ht.T @ K_transposed, R_half @ K_transposed
+        ])
+
+        bel = bel.replace(mean=mean_update, W=W_update)
+        return bel
+
+    def step(self, bel, y, x, callback_fn):
+        # bel_pred = self.predict(bel)
+        bel_pred = bel
+        _update = lambda _, bel: self.update(bel, bel_pred, y, x)
+        bel_update = jax.lax.fori_loop(0, self.n_inner, _update, bel_pred, unroll=self.n_inner)
 
         output = callback_fn(bel_update, bel_pred, y, x)
         return bel_update, output
