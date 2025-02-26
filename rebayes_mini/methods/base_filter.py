@@ -1,0 +1,109 @@
+import jax
+import chex
+import distrax
+import jax.numpy as jnp
+from functools import partial
+from jax.flatten_util import ravel_pytree
+from rebayes_mini import callbacks
+
+
+@chex.dataclass
+class GaussState:
+    mean: chex.Array
+    cov: chex.Array
+
+class BaseGaussFilter:
+    def __init__(self, mean_fn, cov_fn, dynamics_covariance, n_inner=1):
+        """
+        apply_fn: function
+            Maps state and observation to the natural parameters
+        """
+        self.mean_fn_og = mean_fn
+        self.cov_fn = cov_fn
+        self.dynamics_covariance = dynamics_covariance
+        self.n_inner = n_inner
+
+    def init_bel(self, params, cov=1.0):
+        self.rfn, self.mean_fn, init_params = self._initialise_flat_fn(self.mean_fn_og, params)
+        self.grad_mean = jax.jacrev(self.mean_fn)
+
+        nparams = len(init_params)
+        return GaussState(
+            mean=init_params,
+            cov=jnp.eye(nparams) * cov,
+        )
+
+    def _initialise_flat_fn(self, apply_fn, params):
+        flat_params, rfn = ravel_pytree(params)
+
+        @jax.jit
+        def mean_fn(params, x):
+            return apply_fn(rfn(params), x)
+
+        return rfn, mean_fn, flat_params
+
+    def predictive_density(self, bel, X):
+        eta = self.mean_fn(bel.mean, X).astype(float)
+        mean = self.mean(eta)
+        Rt = jnp.atleast_2d(self.covariance(eta))
+        Ht = self.grad_mean(bel.mean, X)
+        covariance = Ht @ bel.cov @ Ht.T + Rt
+        mean = jnp.atleast_1d(mean)
+        dist = distrax.MultivariateNormalFullCovariance(mean, covariance)
+        return dist
+
+    def log_predictive_density(self, y, X, bel):
+        """
+        compute the log-posterior predictive density
+        of the moment-matched Gaussian
+        """
+        log_p_pred = self.predictive_density(bel, X).log_prob(y)
+        return log_p_pred
+
+
+    def predict(self, bel):
+        nparams = len(bel.mean)
+        I = jnp.eye(nparams)
+        pmean_pred = bel.mean
+        pcov_pred = bel.cov + self.dynamics_covariance * I
+        bel = bel.replace(mean=pmean_pred, cov=pcov_pred)
+        return bel
+
+    def update(self, bel, bel_pred, y, x):
+        yhat = self.mean_fn(bel.mean, x).astype(float)
+        Rt = jnp.atleast_2d(self.cov_fn(yhat))
+
+        Ht = self.grad_mean(bel.mean, x)
+        St = Ht @ bel_pred.cov @ Ht.T + Rt
+        Kt = jnp.linalg.solve(St, Ht @ bel_pred.cov).T
+
+        err = y - yhat - Ht @ (bel_pred.mean - bel.mean)
+
+        mean_update = bel_pred.mean + Kt @ err
+        I = jnp.eye(len(bel.mean))
+        cov_update = (I - Kt @ Ht) @ bel_pred.cov @ (I - Kt @ Ht).T + Kt @ Rt @ Kt.T
+        bel = bel.replace(mean=mean_update, cov=cov_update)
+        return bel
+
+    def step(self, bel, y, x, callback_fn):
+        bel_pred = self.predict(bel)
+        _update = lambda _, bel: self.update(bel, bel_pred, y, x)
+        bel_update = jax.lax.fori_loop(0, self.n_inner, _update, bel_pred, unroll=self.n_inner)
+
+        # bel_update = bel_pred
+        # for i in range(5):
+        #     bel_update = self.update(bel_update, bel_pred, y, x)
+
+
+        output = callback_fn(bel_update, bel_pred, y, x)
+        return bel_update, output
+
+    def scan(self, bel, y, X, callback_fn=None):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        def _step(bel, yX):
+            y, x = yX
+            bel, out = self.step(bel, y, x, callback_fn)
+            return bel, out
+
+        bel, hist = jax.lax.scan(_step, bel, (y, X))
+        return bel, hist
