@@ -94,7 +94,6 @@ class LowRankLastLayer:
     
     def innovation_and_gain(self, bel, y, x):
         yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x)
-        # TODO: *** Define self.covariance ***
         R_half = jnp.linalg.cholesky(jnp.atleast_2d(self.covariance(yhat)), upper=True)
         # Jacobian for hidden and last layer
         J_hidden = self.jac_hidden(bel.mean_hidden, bel.mean_last, x)
@@ -154,3 +153,76 @@ class LowRankLastLayer:
 
         bel, hist = jax.lax.scan(_step, bel, (y, X))
         return bel, hist
+
+
+class LowRankLastLayerIt(LowRankLastLayer):
+    def __init__(self, apply_fn, covariance_fn, rank, dynamics_hidden, dynamics_last, n_it_hidden, n_it_last):
+        super().__init__(apply_fn, covariance_fn, rank, dynamics_hidden, dynamics_last)
+        self.n_it_hidden = n_it_hidden
+        self.n_it_last = n_it_last
+   
+    def innovation_grads(self, bel, bel_prior, y, x):
+        yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x)
+        R_half = jnp.linalg.cholesky(jnp.atleast_2d(self.covariance(yhat)), upper=True)
+        # Jacobian for hidden and last layer
+        J_hidden = self.jac_hidden(bel.mean_hidden, bel.mean_last, x)
+        J_last = self.jac_last(bel.mean_hidden, bel.mean_last, x)
+
+        # Innovation
+        err = y - yhat - J_hidden @ (bel_prior.mean_hidden - bel.mean_hidden) - J_last @ (bel_prior.mean_last - bel.mean_last)
+
+        # Upper-triangular cholesky decomposition of the innovation
+        S_half = self.add_sqrt([bel_prior.loading_hidden @ J_hidden.T, bel_prior.loading_last @ J_last.T, R_half])
+
+        return err, J_hidden, J_last, R_half, S_half
+
+
+    def update_hidden(self, bel, bel_prior, y, x):
+        err, J_hidden, J_last, S_half, R_half = self.innovation_grads(bel, bel_prior, y, x)
+        # Transposed gain matrices
+        M_hidden = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_hidden))
+        gain_hidden = M_hidden @ bel_prior.loading_hidden.T @ bel_prior.loading_hidden + M_hidden * self.dynamics_hidden
+
+        mean_hidden = bel.mean_hidden + jnp.einsum("ij,i->j", gain_hidden, err)
+        loading_hidden = self.add_project([
+            bel.loading_hidden - bel.loading_hidden @ J_hidden.T @ gain_hidden, R_half @ gain_hidden
+        ])
+
+        bel = bel.replace(
+            mean_hidden=mean_hidden,
+            loading_hidden=loading_hidden,
+        )
+
+        return bel
+
+
+    def update_last(self, bel, bel_prior, y, x):
+        err, J_hidden, J_last, S_half, R_half = self.innovation_grads(bel, bel_prior, y, x)
+        # Transposed gain matrices
+        M_last = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_last))
+        gain_last = M_last @ bel_prior.loading_last.T @ bel_prior.loading_last + M_last * self.dynamics_last
+
+        mean_last = bel.mean_last + jnp.einsum("ij,i->j", gain_last, err)
+
+        loading_last = self.add_sqrt([
+            bel.loading_last - bel.loading_last @ J_last.T @ gain_last, R_half @ gain_last
+        ])
+
+        bel = bel.replace(
+            mean_last=mean_last,
+            loading_last=loading_last,
+        )
+
+        return bel
+
+
+    def step(self, bel, y, x, callback_fn):
+        bel_pred = self.predict(bel)
+        _update_hidden = lambda _, bel: self.update_hidden(bel, bel_pred, y, x)
+        bel_update = jax.lax.fori_loop(0, self.n_it_hidden, _update_hidden, bel_pred, unroll=self.n_it_hidden)
+
+        _update_last = lambda _, bel: self.update_last(bel, bel_pred, y, x)
+        bel_update = jax.lax.fori_loop(0, self.n_it_last, _update_last, bel_update, unroll=self.n_it_last)
+
+        output = callback_fn(bel_update, bel_pred, y, x)
+        return bel_update, output

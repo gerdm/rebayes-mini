@@ -186,12 +186,12 @@ class SquareRootFilter:
         return bel
 
     def step(self, bel, y, x, callback_fn):
-        # bel_pred = self.predict(bel)
-        bel_pred = bel
+        bel_pred = self.predict(bel)
+        # bel_pred = bel
         _update = lambda _, bel: self.update(bel, bel_pred, y, x)
         bel_update = jax.lax.fori_loop(0, self.n_inner, _update, bel_pred, unroll=self.n_inner)
 
-        output = callback_fn(bel_update, bel_pred, y, x)
+        output = callback_fn(bel_update, bel_pred, y, x, self)
         return bel_update, output
 
     def scan(self, bel, y, X, callback_fn=None):
