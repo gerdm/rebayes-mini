@@ -63,7 +63,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         return P
 
 
-    def _predict(self, state):
+    def predict(self, state):
         mean_pred = state.mean
         low_rank_pred = state.low_rank
 
@@ -93,7 +93,8 @@ class ExpfamFilter(kf.ExpfamFilter):
         err = yobs - yhat
         return Kt_T, err, Rt_half, Ht
     
-    def _update(self, state, Kt_T, err, Rt_half, Ht):
+    def update(self, state, y, x):
+        Kt_T, err, Rt_half, Ht = self._innovation_and_gain(state, y, x)
         mean_update = state.mean + jnp.einsum("ij,i->j", Kt_T, err)
         low_rank_update = self.project(
             state.low_rank - state.low_rank @ Ht.T @ Kt_T, Rt_half @ Kt_T
@@ -106,10 +107,8 @@ class ExpfamFilter(kf.ExpfamFilter):
         return state
 
     def step(self, bel, y, x, callback_fn):
-        bel_pred = self._predict(bel)
-        Kt, err, Rt_half, Ht = self._innovation_and_gain(bel_pred, y, x)
-        bel_update = self._update(bel_pred, Kt, err, Rt_half, Ht)
-
+        bel_pred = self.predict(bel)
+        bel_update = self.update(bel_pred, y, x) 
         output = callback_fn(bel_update, bel_pred, y, x)
         return bel_update, output
 
