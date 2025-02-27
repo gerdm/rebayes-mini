@@ -58,6 +58,13 @@ class LowRankLastLayer:
             loading_last=loading_last
         )
 
+    def sample_params_last_layer(self, key, bel, n_samples=1):
+        n_params_last = len(bel.mean_last)
+        shape = (n_samples, n_params_last)
+        eps = jax.random.normal(key, shape)
+        sample_params = jnp.einsum("ji,sj->si", bel.loading_last, eps) + bel.mean_last
+        return sample_params
+
     def add_sqrt(self, matrices):
         """
         Obtain an upper-triangular matrix C such that
