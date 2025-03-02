@@ -223,7 +223,6 @@ class LowRankLastLayerIt(LowRankLastLayer):
         return bel
 
     def update(self, bel, bel_prior, y, x):
-        print("update")
         err, J_hidden, J_last, S_half, R_half = self.innovation_grads(bel, bel_prior, y, x)
 
         M_hidden = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_hidden))

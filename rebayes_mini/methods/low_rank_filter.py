@@ -112,7 +112,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         return log_p_pred
 
 
-    def _predict(self, bel):
+    def predict(self, bel):
         I_lr = jnp.eye(self.rank)
         mean_pred = bel.mean
         diag_pred = 1 / (1 / bel.diagonal + self.dynamics_covariance)
@@ -170,7 +170,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         return low_rank_new, diag_drop
 
 
-    def _update(self, bel_pred, y, x):
+    def update(self, bel_pred, y, x):
         eta = self.link_fn(bel_pred.mean, x).astype(float)
         yhat = self.mean(eta)
         yobs = self.suff_statistic(y)
@@ -216,8 +216,8 @@ class ExpfamFilter(kf.ExpfamFilter):
 
 
     def step(self, bel, y, x, callback_fn):
-        bel_pred = self._predict(bel)
-        bel_update = self._update(bel_pred, y, x)
+        bel_pred = self.predict(bel)
+        bel_update = self.update(bel_pred, y, x)
 
         output = callback_fn(bel_update, bel_pred, y, x)
         return bel_update, output
