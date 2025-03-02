@@ -2,7 +2,7 @@ import jax
 import chex
 import distrax
 import jax.numpy as jnp
-from functools import partial
+from abc import ABC, abstractmethod
 from jax.flatten_util import ravel_pytree
 from rebayes_mini import callbacks
 
@@ -18,11 +18,52 @@ class GaussStateSqr:
     W: chex.Array
 
 
-class BaseFilter:
-    def __init__(self, mean_fn, cov_fn, dynamics_covariance):
+class BaseFilter(ABC):
+    def __init__(self, mean_fn, cov_fn):
+        self.mean_fn = mean_fn
+        self.cov_fn = cov_fn
+
+    def _initialise_flat_fn(self, apply_fn, params):
+        flat_params, rfn = ravel_pytree(params)
+
+        @jax.jit
+        def mean_fn(params, x):
+            return apply_fn(rfn(params), x)
+
+        return rfn, mean_fn, flat_params
+
+
+    @abstractmethod
+    def init_bel(self):
         ...
 
-class ExtendedFilter:
+    @abstractmethod
+    def predict(self, bel):
+        ...
+
+    @abstractmethod
+    def update(self, bel, y, x):
+        ...
+
+    def step(self, bel, y, x, callback_fn):
+        bel_pred = self.predict(bel)
+        bel_update = self.update(bel_pred, y, x)
+
+        output = callback_fn(bel_update, bel_pred, y, x)
+        return bel_update, output
+
+    def scan(self, bel, y, X, callback_fn=None):
+        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
+        def _step(bel, yX):
+            y, x = yX
+            bel, out = self.step(bel, y, x, callback_fn)
+            return bel, out
+
+        bel, hist = jax.lax.scan(_step, bel, (y, X))
+        return bel, hist
+
+
+class ExtendedFilter(BaseFilter):
     def __init__(self, mean_fn, cov_fn, dynamics_covariance, n_inner=1):
         """
         apply_fn: function
@@ -43,19 +84,11 @@ class ExtendedFilter:
             cov=jnp.eye(nparams) * cov,
         )
 
-    def _initialise_flat_fn(self, apply_fn, params):
-        flat_params, rfn = ravel_pytree(params)
-
-        @jax.jit
-        def mean_fn(params, x):
-            return apply_fn(rfn(params), x)
-
-        return rfn, mean_fn, flat_params
 
     def predictive_density(self, bel, X):
         eta = self.mean_fn(bel.mean, X).astype(float)
         mean = self.mean(eta)
-        Rt = jnp.atleast_2d(self.covariance(eta))
+        Rt = jnp.atleast_2d(self.covariance(eta, bel))
         Ht = self.grad_mean(bel.mean, X)
         covariance = Ht @ bel.cov @ Ht.T + Rt
         mean = jnp.atleast_1d(mean)
@@ -70,6 +103,12 @@ class ExtendedFilter:
         log_p_pred = self.predictive_density(bel, X).log_prob(y)
         return log_p_pred
 
+    def sample_params(self, key, bel, shape=None):
+        shape = shape if shape is not None else (1,)
+        L = jnp.linalg.cholesky(bel.cov)
+        eps = jax.random.normal(key, (*shape, len(bel.mean)))
+        params = jnp.einsum("ji,sj->si", L, eps) + bel.mean
+        return params
 
     def predict(self, bel):
         nparams = len(bel.mean)
@@ -114,7 +153,10 @@ class ExtendedFilter:
         return bel, hist
 
 
-class SquareRootFilter:
+class SquareRootFilter(BaseFilter):
+    """
+    Linearised Iterated Square root filter
+    """
     def __init__(self, mean_fn, cov_fn, dynamics_covariance, n_inner=1):
         """
         apply_fn: function
@@ -134,15 +176,6 @@ class SquareRootFilter:
             mean=init_params,
             W=jnp.linalg.cholesky(jnp.eye(nparams) * cov, upper=True),
         )
-
-    def _initialise_flat_fn(self, apply_fn, params):
-        flat_params, rfn = ravel_pytree(params)
-
-        @jax.jit
-        def mean_fn(params, x):
-            return apply_fn(rfn(params), x)
-
-        return rfn, mean_fn, flat_params
 
     def add_sqrt(self, matrices):
         """
@@ -187,19 +220,8 @@ class SquareRootFilter:
 
     def step(self, bel, y, x, callback_fn):
         bel_pred = self.predict(bel)
-        # bel_pred = bel
         _update = lambda _, bel: self.update(bel, bel_pred, y, x)
         bel_update = jax.lax.fori_loop(0, self.n_inner, _update, bel_pred, unroll=self.n_inner)
 
         output = callback_fn(bel_update, bel_pred, y, x, self)
         return bel_update, output
-
-    def scan(self, bel, y, X, callback_fn=None):
-        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
-        def _step(bel, yX):
-            y, x = yX
-            bel, out = self.step(bel, y, x, callback_fn)
-            return bel, out
-
-        bel, hist = jax.lax.scan(_step, bel, (y, X))
-        return bel, hist

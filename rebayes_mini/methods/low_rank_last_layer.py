@@ -1,12 +1,12 @@
 import jax
 import chex
 import jax.numpy as jnp
-from functools import partial
+from rebayes_mini.methods.base_filter import BaseFilter
 from jax.flatten_util import ravel_pytree
 from rebayes_mini import callbacks
 
 @chex.dataclass
-class OLLIState:
+class LLLRState:
     """State of the online last-layer low-rank inference machine"""
     mean_last: chex.Array
     loading_last: chex.Array
@@ -14,7 +14,7 @@ class OLLIState:
     loading_hidden: chex.Array
 
 
-class LowRankLastLayer:
+class LowRankLastLayer(BaseFilter):
     def __init__(self, apply_fn, covariance_fn, rank, dynamics_hidden, dynamics_last):
         self.apply_fn = apply_fn
         self.covariance = covariance_fn
@@ -22,7 +22,8 @@ class LowRankLastLayer:
         self.dynamics_hidden = dynamics_hidden
         self.dynamics_last = dynamics_last
 
-    def _initialise_fn(self, apply_fn, params):
+
+    def _initialise_flat_fn(self, apply_fn, params):
         """
         Initialize ravelled function and gradients
         """
@@ -41,22 +42,24 @@ class LowRankLastLayer:
 
         return rfn, link_fn, flat_params_hidden, flat_params_last
 
+
     def init_bel(self, params, cov_hidden=1.0, cov_last=1.0):
-        self.rfn, self.mean_fn, init_params_hidden, init_params_last = self._initialise_fn(self.apply_fn, params)
+        self.rfn, self.mean_fn, init_params_hidden, init_params_last = self._initialise_flat_fn(self.apply_fn, params)
         self.jac_hidden = jax.jacrev(self.mean_fn, argnums=0)
         self.jac_last = jax.jacrev(self.mean_fn, argnums=1)
         nparams_hidden = len(init_params_hidden)
         nparams_last = len(init_params_last)
 
         loading_hidden = cov_hidden * jnp.fill_diagonal(jnp.zeros((self.rank, nparams_hidden)), jnp.ones(nparams_hidden), inplace=False)
-        loading_last = cov_last * jnp.eye(nparams_last) # TODO: make it low rank as well? 
+        loading_last = cov_last * jnp.eye(nparams_last) # TODO: make it low rank as well?
 
-        return OLLIState(
+        return LLLRState(
             mean_hidden=init_params_hidden,
             mean_last=init_params_last,
             loading_hidden=loading_hidden,
             loading_last=loading_last
         )
+
 
     def sample_params_last_layer(self, key, bel, n_samples=1):
         n_params_last = len(bel.mean_last)
@@ -64,6 +67,7 @@ class LowRankLastLayer:
         eps = jax.random.normal(key, shape)
         sample_params = jnp.einsum("ji,sj->si", bel.loading_last, eps) + bel.mean_last
         return sample_params
+
 
     def add_sqrt(self, matrices):
         """
@@ -74,6 +78,7 @@ class LowRankLastLayer:
         C_half = jnp.vstack(matrices)
         C_half = jnp.linalg.qr(C_half, mode="r") # Squared-root of innovation
         return C_half
+
 
     def add_project(self, matrices):
         """
@@ -88,7 +93,7 @@ class LowRankLastLayer:
         P = jnp.einsum("i,ji,jk->ik", 1 / singular_values, singular_vectors, Z)
         P = jnp.einsum("d,dD->dD", singular_values[:self.rank], P[:self.rank])
         return P
-    
+
 
     def predict(self, bel):
         return bel
@@ -98,7 +103,8 @@ class LowRankLastLayer:
             loading_last=loading_last
         )
         return bel
-    
+
+
     def innovation_and_gain(self, bel, y, x):
         yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x)
         R_half = jnp.linalg.cholesky(jnp.atleast_2d(self.covariance(yhat)), upper=True)
@@ -120,7 +126,8 @@ class LowRankLastLayer:
         gain_last = M_last @ bel.loading_last.T @ bel.loading_last
 
         return err, gain_hidden, gain_last, J_hidden, J_last, R_half
-    
+
+
     def update(self, bel, y, x):
         err, gain_hidden, gain_last, J_hidden, J_last, R_half = self.innovation_and_gain(bel, y, x)
 
@@ -143,31 +150,12 @@ class LowRankLastLayer:
         return bel
 
 
-    def step(self, bel, y, x, callback_fn):
-        bel_pred = self.predict(bel)
-        bel_update = self.update(bel_pred, y, x)
-
-        output = callback_fn(bel_update, bel_pred, y, x)
-        return bel_update, output
-
-
-    def scan(self, bel, y, X, callback_fn=None):
-        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
-        def _step(bel, yX):
-            y, x = yX
-            bel, out = self.step(bel, y, x, callback_fn)
-            return bel, out
-
-        bel, hist = jax.lax.scan(_step, bel, (y, X))
-        return bel, hist
-
-
 class LowRankLastLayerIt(LowRankLastLayer):
     def __init__(self, apply_fn, covariance_fn, rank, dynamics_hidden, dynamics_last, n_it_hidden, n_it_last):
         super().__init__(apply_fn, covariance_fn, rank, dynamics_hidden, dynamics_last)
         self.n_it_hidden = n_it_hidden
         self.n_it_last = n_it_last
-   
+
     def innovation_grads(self, bel, bel_prior, y, x):
         yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x)
         R_half = jnp.linalg.cholesky(jnp.atleast_2d(self.covariance(yhat)), upper=True)
@@ -250,7 +238,7 @@ class LowRankLastLayerIt(LowRankLastLayer):
         )
 
         return bel
-    
+
 
     def step(self, bel, y, x, callback_fn):
         bel_pred = self.predict(bel)
