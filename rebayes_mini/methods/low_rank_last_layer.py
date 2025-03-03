@@ -63,7 +63,7 @@ class LowRankLastLayer(BaseFilter):
         return loading_hidden
 
 
-    def init_bel(self, params, cov_hidden=1.0, cov_last=1.0, init_diag=True, key=314):
+    def init_bel(self, params, cov_hidden=1.0, cov_last=1.0, low_rank_diag=True, key=314):
         self.rfn, self.mean_fn, init_params_hidden, init_params_last = self._initialise_flat_fn(self.apply_fn, params)
         self.jac_hidden = jax.jacrev(self.mean_fn, argnums=0)
         self.jac_last = jax.jacrev(self.mean_fn, argnums=1)
@@ -71,7 +71,7 @@ class LowRankLastLayer(BaseFilter):
         nparams_last = len(init_params_last)
 
         key = jax.random.PRNGKey(key) if isinstance(key, int) else key
-        loading_hidden = self._init_low_rank(key, nparams_hidden, cov_hidden, init_diag)
+        loading_hidden = self._init_low_rank(key, nparams_hidden, cov_hidden, low_rank_diag)
         loading_last = cov_last * jnp.eye(nparams_last) # TODO: make it low rank as well?
 
         return LLLRState(
@@ -82,12 +82,13 @@ class LowRankLastLayer(BaseFilter):
         )
 
 
-    def sample_params_last_layer(self, key, bel, n_samples=1):
+    def sample_params(self, key, bel, shape=None):
+        shape = shape if shape is not None else (1,)
         n_params_last = len(bel.mean_last)
-        shape = (n_samples, n_params_last)
+        shape = (*shape, n_params_last)
         eps = jax.random.normal(key, shape)
-        sample_params = jnp.einsum("ji,sj->si", bel.loading_last, eps) + bel.mean_last
-        return sample_params
+        params = jnp.einsum("ji,sj->si", bel.loading_last, eps) + bel.mean_last
+        return params
 
 
     def add_sqrt(self, matrices):

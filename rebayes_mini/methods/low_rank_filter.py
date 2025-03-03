@@ -37,9 +37,8 @@ class LowRankPrecisionFilter(BaseFilter):
             diagonal=diagonal,
         )
 
-    def _sample_lr_params(self, key, bel):
+    def sample_params(self, key, bel):
         """
-        TODO(?): refactor code into jax.vmap. (It faster?
         Sample parameters from a low-rank variational Gaussian approximation.
         This implementation avoids the explicit construction of the
         (D x D) covariance matrix.

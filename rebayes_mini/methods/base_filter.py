@@ -186,6 +186,13 @@ class SquareRootFilter(BaseFilter):
         C_half = jnp.vstack(matrices)
         C_half = jnp.linalg.qr(C_half, mode="r") # Squared-root of innovation
         return C_half
+    
+    def sample_params(self, key, bel, shape=None):
+        shape = shape if shape is not None else (1,)
+        dim_params = len(bel.mean)
+        eps = jax.random.normal(key, (*shape, dim_params))
+        sample_params = jnp.einsum("ji,sj->si", bel.W, eps) + bel.mean
+        return sample_params
 
     def predict(self, bel):
         nparams = len(bel.mean)
