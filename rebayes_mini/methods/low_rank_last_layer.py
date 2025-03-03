@@ -26,8 +26,8 @@ def orthogonal(key, n, m):
 
 
 class LowRankLastLayer(BaseFilter):
-    def __init__(self, apply_fn, covariance_fn, rank, dynamics_hidden, dynamics_last):
-        self.apply_fn = apply_fn
+    def __init__(self, mean_fn_tree, covariance_fn, rank, dynamics_hidden, dynamics_last):
+        self.mean_fn_tree = mean_fn_tree
         self.covariance = covariance_fn
         self.rank = rank
         self.dynamics_hidden = dynamics_hidden
@@ -46,12 +46,12 @@ class LowRankLastLayer(BaseFilter):
         flat_params_hidden = flat_params[:-dim_last_layer_params]
 
         @jax.jit
-        def link_fn(params_hidden, params_last, x):
+        def mean_fn(params_hidden, params_last, x):
             params = jnp.concat([params_hidden, params_last])
             return apply_fn(rfn(params), x)
 
 
-        return rfn, link_fn, flat_params_hidden, flat_params_last
+        return rfn, mean_fn, flat_params_hidden, flat_params_last
 
 
     def _init_low_rank(self, key, nparams, cov, diag):
@@ -64,7 +64,7 @@ class LowRankLastLayer(BaseFilter):
 
 
     def init_bel(self, params, cov_hidden=1.0, cov_last=1.0, low_rank_diag=True, key=314):
-        self.rfn, self.mean_fn, init_params_hidden, init_params_last = self._initialise_flat_fn(self.apply_fn, params)
+        self.rfn, self.mean_fn, init_params_hidden, init_params_last = self._initialise_flat_fn(self.mean_fn_tree, params)
         self.jac_hidden = jax.jacrev(self.mean_fn, argnums=0)
         self.jac_last = jax.jacrev(self.mean_fn, argnums=1)
         nparams_hidden = len(init_params_hidden)
@@ -89,6 +89,11 @@ class LowRankLastLayer(BaseFilter):
         eps = jax.random.normal(key, shape)
         params = jnp.einsum("ji,sj->si", bel.loading_last, eps) + bel.mean_last
         return params
+
+    def sample_fn(self, key, bel):
+        params = self.sample_params(key, bel).squeeze()
+        def fn(x): return self.mean_fn(bel.mean_hidden, params, x).squeeze()
+        return fn
 
 
     def add_sqrt(self, matrices):
