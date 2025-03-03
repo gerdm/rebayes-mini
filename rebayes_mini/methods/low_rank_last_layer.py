@@ -14,6 +14,17 @@ class LLLRState:
     loading_hidden: chex.Array
 
 
+def orthogonal(key, n, m):
+    """
+    https://github.com/jax-ml/jax/blob/main/jax/_src/random.py#L2041-L2095
+    """
+    z = jax.random.normal(key, (max(n, m), min(n, m)))
+    q, r = jnp.linalg.qr(z)
+    d = jnp.linalg.diagonal(r)
+    x = q * jnp.expand_dims(jnp.sign(d), -2)
+    return x.T
+
+
 class LowRankLastLayer(BaseFilter):
     def __init__(self, apply_fn, covariance_fn, rank, dynamics_hidden, dynamics_last):
         self.apply_fn = apply_fn
@@ -43,14 +54,24 @@ class LowRankLastLayer(BaseFilter):
         return rfn, link_fn, flat_params_hidden, flat_params_last
 
 
-    def init_bel(self, params, cov_hidden=1.0, cov_last=1.0):
+    def _init_low_rank(self, key, nparams, cov, diag):
+        if diag:
+            loading_hidden = cov * jnp.fill_diagonal(jnp.zeros((self.rank, nparams)), jnp.ones(nparams), inplace=False)
+        else:
+            loading_hidden = cov * orthogonal(key, self.rank, nparams)
+
+        return loading_hidden
+
+
+    def init_bel(self, params, cov_hidden=1.0, cov_last=1.0, init_diag=True, key=314):
         self.rfn, self.mean_fn, init_params_hidden, init_params_last = self._initialise_flat_fn(self.apply_fn, params)
         self.jac_hidden = jax.jacrev(self.mean_fn, argnums=0)
         self.jac_last = jax.jacrev(self.mean_fn, argnums=1)
         nparams_hidden = len(init_params_hidden)
         nparams_last = len(init_params_last)
 
-        loading_hidden = cov_hidden * jnp.fill_diagonal(jnp.zeros((self.rank, nparams_hidden)), jnp.ones(nparams_hidden), inplace=False)
+        key = jax.random.PRNGKey(key) if isinstance(key, int) else key
+        loading_hidden = self._init_low_rank(key, nparams_hidden, cov_hidden, init_diag)
         loading_last = cov_last * jnp.eye(nparams_last) # TODO: make it low rank as well?
 
         return LLLRState(
