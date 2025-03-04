@@ -58,7 +58,6 @@ class LowRankPrecisionFilter(BaseFilter):
         eps_sample = jax.random.normal(key_eps, (dim_latent,))
         x_sample = jax.random.normal(key_x, (dim_full,)) * jnp.sqrt(Psi_inv)
 
-        I_full = jnp.eye(dim_full)
         I_latent = jnp.eye(dim_latent)
         # M = I + W^T Psi^{-1} W
         M = I_latent + jnp.einsum("ji,j,jk->ik", bel.low_rank, Psi_inv, bel.low_rank)
@@ -66,11 +65,18 @@ class LowRankPrecisionFilter(BaseFilter):
         L_tr = jnp.linalg.solve(M.T, jnp.einsum("i,ij->ji", Psi_inv, bel.low_rank))
 
         # samples = (I - LW^T)x + Le
-        term1 = I_full - jnp.einsum("ji,kj->ik", L_tr, bel.low_rank)
+        term1 = jnp.einsum("ji,kj->ik", L_tr, bel.low_rank)
         x_transform = jnp.einsum("ij,j->i", term1, x_sample)
         eps_transform = jnp.einsum("ji,j->i", L_tr, eps_sample)
-        samples = x_transform + eps_transform
+        samples = x_sample + x_transform + eps_transform
         return samples + bel.mean
+
+
+    def sample_fn(self, key, bel):
+        params = self.sample_params(key, bel)
+        def fn(x): return self.mean_fn(params, x).squeeze()
+        return fn
+
 
     def predict(self, bel):
         I_lr = jnp.eye(self.rank)
