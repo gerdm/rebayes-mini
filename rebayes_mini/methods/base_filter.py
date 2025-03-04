@@ -45,6 +45,10 @@ class BaseFilter(ABC):
     def update(self, bel, y, x):
         ...
 
+    @abstractmethod
+    def sample_fn(self, key, bel):
+        ...
+
     def step(self, bel, y, x, callback_fn):
         bel_pred = self.predict(bel)
         bel_update = self.update(bel_pred, y, x)

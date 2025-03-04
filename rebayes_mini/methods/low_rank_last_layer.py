@@ -123,7 +123,6 @@ class LowRankLastLayer(BaseFilter):
 
 
     def predict(self, bel):
-        return bel
         dimlast = len(bel.mean_last)
         loading_last = self.add_sqrt([bel.loading_last, self.dynamics_last * jnp.eye(dimlast)])
         bel = bel.replace(
