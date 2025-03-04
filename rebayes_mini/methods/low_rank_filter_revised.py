@@ -41,10 +41,19 @@ class LowRankCovarianceFilter(BaseFilter):
         return loading_hidden
 
     def sample_params(self, key, bel, shape=None):
+        """
+        TODO: Double check!!
+        """
         shape = shape if shape is not None else (1,)
         shape = (*shape, self.rank)
         eps = jax.random.normal(key, shape)
-        params = jnp.einsum("ji,sj->si", bel.low_rank, eps) + bel.mean
+            # Compute QR decomposition of W
+        Q, R = jnp.linalg.qr(bel.low_rank.T)  # QR decomposition of W^T
+        
+        # Compute covariance decomposition using QR trick
+        A = R @ Q.T + jnp.sqrt(bel.diagonal)  # Approximate Cholesky-like factorization
+
+        params = jnp.einsum("ji,sj->si", A, eps) + bel.mean
         return params
 
     def sample_fn(self, key, bel):
