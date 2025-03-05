@@ -180,6 +180,19 @@ class SquareRootFilter(BaseFilter):
             mean=init_params,
             W=jnp.linalg.cholesky(jnp.eye(nparams) * cov, upper=True),
         )
+    
+    def sample_params(self, key, bel, shape=None):
+        shape = shape if shape is not None else (1,)
+        dim = len(bel.mean)
+        shape = (*shape, dim)
+        eps = jax.random.normal(key, shape)
+        params = jnp.einsum("ji,..j->...i", bel.W, eps) + bel.mean
+        return params
+    
+    def sample_fn(self, key, bel):
+        params = self.sample_params(key, bel).squeeze()
+        def fn(x): return self.mean_fn(params, x).squeeze()
+        return fn
 
     def add_sqrt(self, matrices):
         """
