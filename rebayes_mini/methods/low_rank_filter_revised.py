@@ -34,9 +34,9 @@ class LowRankCovarianceFilter(BaseFilter):
 
     def _init_low_rank(self, key, nparams, cov, diag):
         if diag:
-            loading_hidden = cov * jnp.fill_diagonal(jnp.zeros((self.rank, nparams)), jnp.ones(nparams), inplace=False)
+            loading_hidden = jnp.fill_diagonal(jnp.zeros((self.rank, nparams)), jnp.ones(nparams), inplace=False)
         else:
-            loading_hidden = cov * orthogonal(key, self.rank, nparams)
+            loading_hidden = orthogonal(key, self.rank, nparams)
 
         return loading_hidden
 
@@ -44,16 +44,15 @@ class LowRankCovarianceFilter(BaseFilter):
         """
         TODO: Double check!!
         """
+        key_full, key_sub = jax.random.split(key)
+        dim_full = len(bel.mean)
         shape = shape if shape is not None else (1,)
-        shape = (*shape, self.rank)
-        eps = jax.random.normal(key, shape)
-            # Compute QR decomposition of W
-        Q, R = jnp.linalg.qr(bel.low_rank.T)  # QR decomposition of W^T
-        
-        # Compute covariance decomposition using QR trick
-        A = R @ Q.T + jnp.sqrt(bel.diagonal)  # Approximate Cholesky-like factorization
+        shape_sub = (*shape, self.rank)
+        shape_full = (*shape, dim_full)
+        eps = jax.random.normal(key_sub, shape_sub)
 
-        params = jnp.einsum("ji,sj->si", A, eps) + bel.mean
+        # params = jnp.einsum("ji,sj->si", bel.low_rank, eps) + eps_full * jnp.sqrt(self.dynamics_covariance) + bel.mean
+        params = jnp.einsum("ji,sj->si", bel.low_rank, eps) + bel.mean
         return params
 
     def sample_fn(self, key, bel):
@@ -68,7 +67,7 @@ class LowRankCovarianceFilter(BaseFilter):
         nparams = len(init_params)
         low_rank = self._init_low_rank(key, nparams, cov, low_rank_diag)
 
-        diag = jnp.ones(nparams) * cov
+        diag = jnp.zeros(nparams) * cov
 
         return LowRankState(
             mean=init_params,
@@ -102,13 +101,13 @@ class LowRankCovarianceFilter(BaseFilter):
         return bel_pred
     
     def _innovation_and_gain(self, bel, y, x):
-        yhat = self.mean_fn(bel.mean, x)
+        yhat = self.mean_fn(bel.mean, x).astype(float)
         Rt_half = jnp.linalg.cholesky(jnp.atleast_2d(self.cov_fn(yhat)), upper=True)
         Ht = self.grad_mean_fn(bel.mean, x)
         W = bel.low_rank
 
-        C = jnp.r_[W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half]
-        # C = jnp.r_[W @ Ht.T, Rt_half]
+        # C = jnp.r_[W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half]
+        C = jnp.r_[W @ Ht.T, Rt_half]
         S_half = jnp.linalg.qr(C, mode="r") # Squared-root of innovation
 
         # transposed Kalman gain and innovation
@@ -181,7 +180,27 @@ class ExpfamFilter(kf.ExpfamFilter):
         P = jnp.einsum("i,ji,jk->ik", 1 / singular_values, singular_vectors, Z)
         P = jnp.einsum("d,dD->dD", singular_values[:self.rank], P[:self.rank])
         return P
+    
+    def mean_fn(self, bel, x):
+        return self.link_fn(bel, x)
 
+    def sample_params(self, key, bel, shape=None):
+        """
+        TODO: Double check!!
+        """
+        key_full, key_sub = jax.random.split(key)
+        dim_full = len(bel.mean)
+        shape = shape if shape is not None else (1,)
+        shape_sub = (*shape, self.rank)
+        eps = jax.random.normal(key_sub, shape_sub)
+
+        params = jnp.einsum("ji,sj->si", bel.low_rank, eps) + bel.mean
+        return params
+
+    def sample_fn(self, key, bel):
+        params = self.sample_params(key, bel).squeeze()
+        def fn(x): return self.mean_fn(params, x).squeeze()
+        return fn
 
     def predict(self, state):
         mean_pred = state.mean
@@ -210,7 +229,7 @@ class ExpfamFilter(kf.ExpfamFilter):
         # transposed Kalman gain and innovation
         Mt = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, Ht))
         Kt_T = Mt @ W.T @ W + Mt * state.diagonal
-        err = yobs - yhat
+        err = y - yhat
         return Kt_T, err, Rt_half, Ht
     
     def update(self, state, y, x):
