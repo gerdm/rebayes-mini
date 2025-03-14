@@ -116,8 +116,9 @@ class LowRankLastLayer(BaseFilter):
         ZZ = jnp.einsum("ij,kj->ik", Z, Z)
         singular_vectors, singular_values, _ = jnp.linalg.svd(ZZ, hermitian=True, full_matrices=False)
         singular_values = jnp.sqrt(singular_values) # square root of eigenvalues
+        singular_values_inv = jnp.where(singular_values != 0.0, 1 / singular_values, 0.0)
 
-        P = jnp.einsum("i,ji,jk->ik", 1 / singular_values, singular_vectors, Z)
+        P = jnp.einsum("i,ji,jk->ik", singular_values_inv, singular_vectors, Z)
         P = jnp.einsum("d,dD->dD", singular_values[:self.rank], P[:self.rank])
         return P
 
@@ -268,11 +269,12 @@ class LowRankLastLayerIt(LowRankLastLayer):
 
     def step(self, bel, y, x, callback_fn):
         bel_pred = self.predict(bel)
-        _update_hidden = lambda _, bel: self.update_hidden(bel, bel_pred, y, x)
-        bel_update = jax.lax.fori_loop(0, self.n_it_hidden, _update_hidden, bel_pred, unroll=self.n_it_hidden)
 
         _update_last = lambda _, bel: self.update_last(bel, bel_pred, y, x)
-        bel_update = jax.lax.fori_loop(0, self.n_it_last, _update_last, bel_update, unroll=self.n_it_last)
+        bel_update = jax.lax.fori_loop(0, self.n_it_last, _update_last, bel_pred, unroll=self.n_it_last)
+
+        _update_hidden = lambda _, bel: self.update_hidden(bel, bel_pred, y, x)
+        bel_update = jax.lax.fori_loop(0, self.n_it_hidden, _update_hidden, bel_update, unroll=self.n_it_hidden)
 
         # _update = lambda _, bel: self.update(bel, bel_pred, y, x)
         # bel_update = jax.lax.fori_loop(0, self.n_it_last, _update, bel_pred, unroll=self.n_it_last)
