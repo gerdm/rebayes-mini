@@ -114,6 +114,11 @@ class ExtendedFilter(BaseFilter):
         params = jnp.einsum("ji,sj->si", L, eps) + bel.mean
         return params
 
+    def sample_fn(self, key, bel):
+        params = self.sample_params(key, bel).squeeze()
+        def fn(x): return self.mean_fn(params, x).squeeze()
+        return fn
+
     def predict(self, bel):
         nparams = len(bel.mean)
         I = jnp.eye(nparams)
