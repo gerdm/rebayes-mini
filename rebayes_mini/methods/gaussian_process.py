@@ -75,8 +75,18 @@ class GaussianProcessRegression:
         return bel
 
     def mean_fn(self, bel, x):
+        # TODO: Fix. Consider all points when buffer is full
+        mask = jnp.where(bel.counter == 0)[0]
+        # We don't need the below (why? mask is varying in size)
+        # mask = jnp.where(bel.counter == 0, size=len(bel.counter), fill_value=-1)[0]
+        # mask = mask.at[jnp.where(mask == -1)].set(mask[0])
+
         var_train = self.kernel(bel.X, bel.X, self.sigma)
         cov_test_train = self.kernel(x, bel.X, self.sigma)
         # var_test = self.kernel(x, x, self.sigma)
-        K = jnp.linalg.solve(var_train, cov_test_train.T).T # cov_test_train @ inv(var_train)
-        return K @ bel.y
+
+        var_train_masked = var_train.at[mask].set(0.0).at[:, mask].set(0.0) + 1e-7 * jnp.eye(var_train.shape[0])
+        K = jnp.linalg.solve(var_train_masked, cov_test_train.T) # cov_test_train @ inv(var_train)
+        K = K.at[mask].set(0.0).T
+
+        return K @ bel.y, mask
