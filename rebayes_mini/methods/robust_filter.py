@@ -139,6 +139,13 @@ class ExtendedKalmanFilterInverseWishart(ExtendedKalmanFilter):
         self.n_inner = n_inner
         self.noise_scaling = noise_scaling
 
+    def observation_variance(self, bel, x, y):
+        Ht = self.jac_obs(bel.mean, x)
+        yhat_corr = self.vobs_fn(bel.mean, x)
+        S = (y - yhat_corr) @ (y - yhat_corr).T + Ht @ bel.cov @ Ht.T
+        Lambda = (self.noise_scaling * self.observation_covariance + S) / (self.noise_scaling + 1)
+        return Lambda
+
     def _update(self, _, bel, bel_pred, x, y):
         Ht = self.jac_obs(bel.mean, x)
         I = jnp.eye(len(bel.mean))
@@ -153,8 +160,7 @@ class ExtendedKalmanFilterInverseWishart(ExtendedKalmanFilter):
         bel = bel.replace(mean=mean_new, cov=cov_new)
         return bel
 
-    def step(self, bel, xs, callback_fn):
-        x, y = xs
+    def step(self, bel, y, x, callback_fn):
         bel_pred = super()._predict(bel)
         partial_update = partial(self._update, bel_pred=bel_pred, x=x, y=y)
         bel_update = jax.lax.fori_loop(0, self.n_inner, partial_update, bel_pred)
@@ -352,14 +358,13 @@ class RobustStFilter(ExtendedKalmanFilter):
         group = bel, expected_terms
         return group
 
-    def step(self, bel, xs, callback_fn):
-        xt, yt = xs
+    def step(self, bel, y, x, callback_fn):
         bel_pred = self._predict_step(bel)
-        partial_update = partial(self._update, y=yt, x=xt, bel_pred=bel_pred)
-        expected_terms = self._compute_initial_expectations(bel_pred, bel_pred, yt, xt)
+        partial_update = partial(self._update, y=y, x=x, bel_pred=bel_pred)
+        expected_terms = self._compute_initial_expectations(bel_pred, bel_pred, y, x)
         group_init = bel_pred, expected_terms
         bel_update, _ = jax.lax.fori_loop(0, self.n_inner, partial_update, group_init)
-        output = callback_fn(bel_update, bel_pred, yt, xt)
+        output = callback_fn(bel_update, bel_pred, y, x)
 
         return bel_update, output
 
@@ -402,10 +407,11 @@ class ExtendedKalmanFilterIMQ(ExtendedKalmanFilter):
     def step(self, bel, y, x, callback_fn):
         bel_pred = self._predict(bel)
 
+        yhat = self.vobs_fn(bel.mean, x)
+        err = y - yhat
         weighting_term = self.soft_threshold ** 2 / (self.soft_threshold ** 2 + jnp.inner(err, err))
         Ht = self.jac_obs(bel.mean, x)
         Rt = self.observation_covariance / weighting_term
-        yhat = self.vobs_fn(bel.mean, x)
 
         bel_update = self._update(bel_pred, y, x, yhat, Ht, Rt)
 
@@ -549,16 +555,15 @@ class ExtendedKalmanFilterBernoulli(ExtendedKalmanFilter):
         B = jnp.outer(err, err) # + Ht @ bel.cov @ Ht.T
         return B
 
-    def step(self, bel, xs, callback_fn):
-        xt, yt = xs
+    def step(self, bel, y, x, callback_fn):
         bel_pred = self._predict_step(bel)
         bel = bel_pred.replace(pr_inlier=1.0, tau=1.0)
-        _inner = partial(self._inner_update, bel_pred=bel_pred, y=yt, x=xt)
+        _inner = partial(self._inner_update, bel_pred=bel_pred, y=y, x=x)
         bel_update = jax.lax.fori_loop(0, self.n_inner, _inner, bel)
         # i = 0
         # bel_update, i = jax.lax.while_loop(lambda xs: xs[0].tau > self.tol_inner, _inner, (bel, i))
 
-        output = callback_fn(bel_update, bel_pred, yt, xt)
+        output = callback_fn(bel_update, bel_pred, y, x)
         return bel_update, output
 
 
