@@ -77,6 +77,19 @@ class GaussianProcessRegression(BaseFilter):
     def update(self, bel, y, x):
         bel = bel.update_buffer(y, x)
         return bel
+    
+    def _sample_multivariate_gauss(self, key, mean, cov, n_samples, min_ev=1e-6):
+        # TODO: FIX!
+        dim = cov.shape[0]
+        # ev = jnp.linalg.eigh(cov)
+        U, S, Vh = jnp.linalg.svd(cov)
+        S = jnp.sqrt(S)
+        # cov = ev.eigenvectors @ jnp.diag(jnp.clip(ev.eigenvalues, min=min_ev)) @ ev.eigenvectors.T
+        # import pdb; pdb.set_trace()
+        # L = jnp.linalg.cholesky(cov)
+        rvs = jax.random.normal(key, shape=(dim, n_samples))
+        L = (U @ jnp.diag(S))
+        return L @ rvs + mean[:, None]
 
 
     def _build_kernel_matrices(self, bel, x):
@@ -94,13 +107,19 @@ class GaussianProcessRegression(BaseFilter):
 
 
     def sample_fn(self, key, bel):
-        raise NotImplementedError("Not yet implemented")
+        # TODO: double check that nothing funny is happening the K when buffer is not filled
+        def fn(x):
+            cov_test_train, var_train, var_test = self._build_kernel_matrices(bel, x)
+            K = jnp.linalg.lstsq(var_train, cov_test_train.T)[0].T
+            mu_pred = K @ bel.y # mean posterior predictive
+            cov_pred = var_test - K @ var_train @ K.T
+            sample = self._sample_multivariate_gauss(key, mu_pred, cov_pred, n_samples=1)
+            return sample
+        return fn
 
 
     def mean_fn(self, bel, x):
         cov_test_train, var_train, _ = self._build_kernel_matrices(bel, x)
-
         # Takes care of rows and columns set to zero
         K = jnp.linalg.lstsq(var_train, cov_test_train.T)[0].T
-
         return K @ bel.y
