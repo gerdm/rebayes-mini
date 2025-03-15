@@ -78,21 +78,29 @@ class GaussianProcessRegression(BaseFilter):
         bel = bel.update_buffer(y, x)
         return bel
 
-    def sample_fn(self, key, bel):
-        raise NotImplementedError("Not yet implemented")
 
-    def mean_fn(self, bel, x):
+    def _build_kernel_matrices(self, bel, x):
         mask = jnp.where(bel.counter == 0)[0]
 
         var_train = self.kernel(bel.X, bel.X)
         var_train_diag = jnp.diag(var_train) + self.obs_variance
         var_train = var_train.at[jnp.diag_indices_from(var_train)].set(var_train_diag)
+        var_train_masked = var_train.at[mask].set(0.0).at[:, mask].set(0.0)
 
         cov_test_train = self.kernel(x, bel.X)
-        # var_test = self.kernel(x, x)
+        var_test = self.kernel(x, x)
 
-        var_train_masked = var_train.at[mask].set(0.0).at[:, mask].set(0.0)
+        return cov_test_train, var_train_masked, var_test
+
+
+    def sample_fn(self, key, bel):
+        raise NotImplementedError("Not yet implemented")
+
+
+    def mean_fn(self, bel, x):
+        cov_test_train, var_train, _ = self._build_kernel_matrices(bel, x)
+
         # Takes care of rows and columns set to zero
-        K = jnp.linalg.lstsq(var_train_masked, cov_test_train.T)[0].T # cov_test_train @ inv(var_train)
+        K = jnp.linalg.lstsq(var_train, cov_test_train.T)[0].T
 
-        return K @ bel.y, mask
+        return K @ bel.y
