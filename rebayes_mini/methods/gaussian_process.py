@@ -2,9 +2,10 @@ import jax
 import chex
 import jax.numpy as jnp
 from functools import partial
+from rebayes_mini.methods.base_filter import BaseFilter
 
-@partial(jax.vmap, in_axes=(0, None, None))
-@partial(jax.vmap, in_axes=(None, 0, None))
+@partial(jax.vmap, in_axes=(0, None))
+@partial(jax.vmap, in_axes=(None, 0))
 def matern_kernel(u, v, length_scale=1.0, nu=1/2):
     """
     https://andrewcharlesjones.github.io/journal/matern-kernels.html
@@ -55,13 +56,13 @@ class FIFOGPState:
         )
 
 
-class GaussianProcessRegression:
+class GaussianProcessRegression(BaseFilter):
     """
     Rebayes-mini-compatible GP regressor
     """
-    def __init__(self, sigma=1.0):
+    def __init__(self, obs_variance):
         self.kernel = matern_kernel
-        self.sigma = sigma
+        self.obs_variance = obs_variance
 
     def init_bel(self, dim_in, buffer_size):
         X = jnp.zeros((buffer_size, dim_in))
@@ -70,23 +71,28 @@ class GaussianProcessRegression:
         bel = FIFOGPState(X=X, y=y, buffer_size=buffer_size, counter=counter, num_obs=0)
         return bel
 
+    def predict(self, bel):
+        return bel
+
     def update(self, bel, y, x):
         bel = bel.update_buffer(y, x)
         return bel
 
+    def sample_fn(self, key, bel):
+        raise NotImplementedError("Not yet implemented")
+
     def mean_fn(self, bel, x):
-        # TODO: Fix. Consider all points when buffer is full
         mask = jnp.where(bel.counter == 0)[0]
-        # We don't need the below (why? mask is varying in size)
-        # mask = jnp.where(bel.counter == 0, size=len(bel.counter), fill_value=-1)[0]
-        # mask = mask.at[jnp.where(mask == -1)].set(mask[0])
 
-        var_train = self.kernel(bel.X, bel.X, self.sigma)
-        cov_test_train = self.kernel(x, bel.X, self.sigma)
-        # var_test = self.kernel(x, x, self.sigma)
+        var_train = self.kernel(bel.X, bel.X)
+        var_train_diag = jnp.diag(var_train) + self.obs_variance
+        var_train = var_train.at[jnp.diag_indices_from(var_train)].set(var_train_diag)
 
-        var_train_masked = var_train.at[mask].set(0.0).at[:, mask].set(0.0) + 1e-7 * jnp.eye(var_train.shape[0])
-        K = jnp.linalg.solve(var_train_masked, cov_test_train.T) # cov_test_train @ inv(var_train)
-        K = K.at[mask].set(0.0).T
+        cov_test_train = self.kernel(x, bel.X)
+        # var_test = self.kernel(x, x)
+
+        var_train_masked = var_train.at[mask].set(0.0).at[:, mask].set(0.0)
+        # Takes care of rows and columns set to zero
+        K = jnp.linalg.lstsq(var_train_masked, cov_test_train.T)[0].T # cov_test_train @ inv(var_train)
 
         return K @ bel.y, mask
