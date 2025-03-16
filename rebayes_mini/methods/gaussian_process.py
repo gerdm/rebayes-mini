@@ -4,29 +4,42 @@ import jax.numpy as jnp
 from functools import partial
 from rebayes_mini.methods.base_filter import BaseFilter
 
-@partial(jax.vmap, in_axes=(0, None))
-@partial(jax.vmap, in_axes=(None, 0))
-def matern_kernel(u, v, length_scale=1.0, nu=1/2):
+def matern_kernel(length_scale=1.0, nu=5/2):
     """
     https://andrewcharlesjones.github.io/journal/matern-kernels.html
     """
-    # Compute the distance between u and v
-    r = jnp.linalg.norm(u - v, ord=2)
-
-    # Calculate the scaling factor
-    scaled_distance = r / length_scale
-    
-    # Define the Matérn kernel based on the value of nu
-    if nu == 1/2:
-        kernel_value = jnp.exp(-scaled_distance)
-    elif nu == 3/2:
-        kernel_value = (1 + jnp.sqrt(3) * scaled_distance) * jnp.exp(-jnp.sqrt(3) * scaled_distance)
-    elif nu == 5/2:
-        kernel_value = (1 + jnp.sqrt(5) * scaled_distance + (5 * scaled_distance**2) / 3) * jnp.exp(-jnp.sqrt(5) * scaled_distance)
-    else:
+    valid_nu = [1/2, 3/2, 5/2]
+    if  nu not in valid_nu:
         raise ValueError(f"Unsupported nu value: {nu}")
 
-    return kernel_value
+    @partial(jax.vmap, in_axes=(0, None))
+    @partial(jax.vmap, in_axes=(None, 0))
+    def kernel(u, v):
+        # Compute the distance between u and v
+        r = jnp.linalg.norm(u - v, ord=2)
+        # Calculate the scaling factor
+        scaled_distance = r / length_scale
+        
+        # Define the Matérn kernel based on the value of nu
+        if nu == 1/2:
+            kernel_value = jnp.exp(-scaled_distance)
+        elif nu == 3/2:
+            kernel_value = (1 + jnp.sqrt(3) * scaled_distance) * jnp.exp(-jnp.sqrt(3) * scaled_distance)
+        elif nu == 5/2:
+            kernel_value = (1 + jnp.sqrt(5) * scaled_distance + (5 * scaled_distance**2) / 3) * jnp.exp(-jnp.sqrt(5) * scaled_distance)
+        return kernel_value
+
+    return kernel
+
+
+def gaussian_kernel(sigma2):
+    @partial(jax.vmap, in_axes=(0, None))
+    @partial(jax.vmap, in_axes=(None, 0))
+    def kernel(u, v):
+        k =  jnp.exp(-(u - v) ** 2 / (2 * sigma2))
+        return k.squeeze()
+
+    return kernel
 
 
 @chex.dataclass
