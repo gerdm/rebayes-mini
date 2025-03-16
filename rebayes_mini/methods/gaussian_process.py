@@ -60,8 +60,8 @@ class GaussianProcessRegression(BaseFilter):
     """
     Rebayes-mini-compatible GP regressor
     """
-    def __init__(self, obs_variance):
-        self.kernel = matern_kernel
+    def __init__(self, obs_variance, kernel):
+        self.kernel = kernel
         self.obs_variance = obs_variance
 
     def init_bel(self, dim_in, buffer_size):
@@ -79,16 +79,11 @@ class GaussianProcessRegression(BaseFilter):
         return bel
     
     def _sample_multivariate_gauss(self, key, mean, cov, n_samples, min_ev=1e-6):
-        # TODO: FIX!
         dim = cov.shape[0]
-        # ev = jnp.linalg.eigh(cov)
         U, S, Vh = jnp.linalg.svd(cov)
         S = jnp.sqrt(S)
-        # cov = ev.eigenvectors @ jnp.diag(jnp.clip(ev.eigenvalues, min=min_ev)) @ ev.eigenvectors.T
-        # import pdb; pdb.set_trace()
-        # L = jnp.linalg.cholesky(cov)
         rvs = jax.random.normal(key, shape=(dim, n_samples))
-        L = (U @ jnp.diag(S))
+        L = U @ jnp.diag(S) @ Vh
         return L @ rvs + mean[:, None]
 
 
@@ -112,7 +107,8 @@ class GaussianProcessRegression(BaseFilter):
             cov_test_train, var_train, var_test = self._build_kernel_matrices(bel, x)
             K = jnp.linalg.lstsq(var_train, cov_test_train.T)[0].T
             mu_pred = K @ bel.y # mean posterior predictive
-            cov_pred = var_test - K @ var_train @ K.T
+            # cov_pred = var_test - K @ var_train @ K.T
+            cov_pred = var_pred = var_test - jnp.einsum("ij,jk,lk->il", K, var_train, K,  precision="highest")
             sample = self._sample_multivariate_gauss(key, mu_pred, cov_pred, n_samples=1)
             return sample
         return fn
