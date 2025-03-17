@@ -100,18 +100,34 @@ class GaussianProcessRegression(BaseFilter):
         return L @ rvs + mean[:, None]
 
 
+    def __mask_matrix(self, bel, A):
+        """
+        Set rows and columns of a matrix A to zero
+        where bel.counter == 0.0,
+        """
+        mask = jnp.where(bel.counter == 0, size=len(bel.counter), fill_value=jnp.nan)[0]
+        mask = jnp.nan_to_num(mask, nan=mask[0]).astype(int)
+        A_masked = A.at[mask].set(0.0).at[:, mask].set(0.0)
+        return A_masked
+
+
     def _build_kernel_matrices(self, bel, x):
-        mask = jnp.where(bel.counter == 0)[0]
+        is_full_buffer = jnp.all(bel.counter == 1)
 
         var_train = self.kernel(bel.X, bel.X)
         var_train_diag = jnp.diag(var_train) + self.obs_variance
         var_train = var_train.at[jnp.diag_indices_from(var_train)].set(var_train_diag)
-        var_train_masked = var_train.at[mask].set(0.0).at[:, mask].set(0.0)
+
+        var_train = jax.lax.cond(
+            is_full_buffer,
+            lambda: var_train,
+            lambda: self.__mask_matrix(bel, var_train)
+        )
 
         cov_test_train = self.kernel(x, bel.X)
         var_test = self.kernel(x, x)
 
-        return cov_test_train, var_train_masked, var_test
+        return cov_test_train, var_train, var_test
 
 
     def sample_fn(self, key, bel):
@@ -119,9 +135,22 @@ class GaussianProcessRegression(BaseFilter):
         def fn(x):
             cov_test_train, var_train, var_test = self._build_kernel_matrices(bel, x)
             K = jnp.linalg.lstsq(var_train, cov_test_train.T)[0].T
-            mu_pred = K @ bel.y # mean posterior predictive
-            # cov_pred = var_test - K @ var_train @ K.T
-            cov_pred = var_pred = var_test - jnp.einsum("ij,jk,lk->il", K, var_train, K,  precision="highest")
+            is_empty = jnp.all(bel.counter == 0.0)
+
+            # posterior predictive mean
+            mu_pred = jax.lax.cond(
+                is_empty,
+                lambda: jnp.zeros(len(x)),
+                lambda: K @ bel.y 
+            )
+
+            # Posterior predictive variance-covariance matrix
+            cov_pred = jax.lax.cond(
+                is_empty,
+                lambda: var_test,
+                lambda: var_test - jnp.einsum("ij,jk,lk->il", K, var_train, K,  precision="highest")
+            )
+
             sample = self._sample_multivariate_gauss(key, mu_pred, cov_pred, n_samples=1)
             return sample
         return fn
