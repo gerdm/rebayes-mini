@@ -155,18 +155,27 @@ class LowRankLastLayer(BaseFilter):
         return err, gain_hidden, gain_last, J_hidden, J_last, R_half
 
 
+    def _update_hidden(self, bel, J, gain, R_half, err):
+        mean_hidden = bel.mean_hidden + jnp.einsum("ij,i->j", gain, err)
+        loading_hidden = self.add_project([
+            bel.loading_hidden - bel.loading_hidden @ J.T @ gain, R_half @ gain
+        ])
+        return mean_hidden, loading_hidden
+
+
+    def _update_last(self, bel, J, gain, R_half, err):
+        mean_last = bel.mean_last + jnp.einsum("ij,i->j", gain, err)
+        loading_last = self.add_sqrt([
+            bel.loading_last - bel.loading_last @ J.T @ gain, R_half @ gain
+        ])
+        return mean_last, loading_last
+
+
     def update(self, bel, y, x):
         err, gain_hidden, gain_last, J_hidden, J_last, R_half = self.innovation_and_gain(bel, y, x)
 
-        mean_hidden = bel.mean_hidden + jnp.einsum("ij,i->j", gain_hidden, err)
-        mean_last = bel.mean_last + jnp.einsum("ij,i->j", gain_last, err)
-
-        loading_hidden = self.add_project([
-            bel.loading_hidden - bel.loading_hidden @ J_hidden.T @ gain_hidden, R_half @ gain_hidden
-        ])
-        loading_last = self.add_sqrt([
-            bel.loading_last - bel.loading_last @ J_last.T @ gain_last, R_half @ gain_last
-        ])
+        mean_hidden, loading_hidden = self._update_hidden(bel, J_hidden, gain_hidden, R_half, err)
+        mean_last, loading_last = self._update_last(bel, J_last, gain_last, R_half, err)
 
         bel = bel.replace(
             mean_hidden=mean_hidden,
