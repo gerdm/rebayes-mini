@@ -1,5 +1,6 @@
 import jax
 import chex
+import distrax
 import jax.numpy as jnp
 from rebayes_mini.methods.base_filter import BaseFilter
 from jax.flatten_util import ravel_pytree
@@ -130,6 +131,25 @@ class LowRankLastLayer(BaseFilter):
             loading_last=loading_last
         )
         return bel
+
+    def predictive_density(self, bel, x):
+        yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x)
+        R_half = jnp.linalg.cholesky(jnp.atleast_2d(self.covariance(yhat)), upper=True)
+        # Jacobian for hidden and last layer
+        J_hidden = self.jac_hidden(bel.mean_hidden, bel.mean_last, x)
+        J_last = self.jac_last(bel.mean_hidden, bel.mean_last, x)
+
+        # Upper-triangular cholesky decomposition of the innovation
+        S_half = self.add_sqrt([bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half])
+        # S_half = self.add_sqrt([bel.loading_last @ J_last.T, R_half])
+        dist = distrax.Normal(loc=yhat, scale=S_half.squeeze())
+        return dist
+
+
+    def sample_predictive(self, key, bel, x):
+        dist = self.predictive_density(bel, x)
+        sample = dist.sample(seed=key)
+        return sample
 
 
     def innovation_and_gain(self, bel, y, x):
