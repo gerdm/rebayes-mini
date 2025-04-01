@@ -1,9 +1,9 @@
 import jax
 import chex
+import distrax
 import jax.numpy as jnp
 from functools import partial
 from rebayes_mini.methods.base_filter import BaseFilter
-from rebayes_mini.methods import gauss_filter as kf
 
 @chex.dataclass
 class LowRankState:
@@ -56,6 +56,23 @@ class LowRankCovarianceFilter(BaseFilter):
         params = self.sample_params(key, bel).squeeze()
         def fn(x): return self.mean_fn(params, x).squeeze()
         return fn
+
+    def predictive_density(self, bel, x):
+        yhat = self.mean_fn(bel.mean, x).astype(float)
+        Rt_half = jnp.linalg.cholesky(jnp.atleast_2d(self.cov_fn(yhat)), upper=True)
+        Ht = self.grad_mean_fn(bel.mean, x)
+        W = bel.low_rank
+
+        C = jnp.r_[W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half]
+
+        dist = distrax.Normal(loc=yhat, scale=C.squeeze())
+        return dist
+
+
+    def sample_predictive(self, key, bel, x):
+        dist = self.predictive_density(bel, x)
+        sample = dist.sample(seed=key)
+        return sample
 
     def init_bel(self, params, cov=1.0, low_rank_diag=True, key=314):
         key = jax.random.PRNGKey(key) if isinstance(key, int) else key
