@@ -73,7 +73,8 @@ class LowRankLastLayer(BaseFilter):
 
         key = jax.random.PRNGKey(key) if isinstance(key, int) else key
         loading_hidden = self._init_low_rank(key, nparams_hidden, cov_hidden, low_rank_diag)
-        loading_last = cov_last * jnp.eye(nparams_last) # TODO: make it low rank as well?
+        # loading_last = cov_last * jnp.eye(nparams_last) # TODO: make it low rank as well?
+        loading_last  = orthogonal(key, nparams_last, nparams_last) * cov_last
 
         return LLLRState(
             mean_hidden=init_params_hidden,
@@ -90,10 +91,19 @@ class LowRankLastLayer(BaseFilter):
         eps = jax.random.normal(key, shape)
         params = jnp.einsum("ji,sj->si", bel.loading_last, eps) + bel.mean_last
         return params
+    
+    def sample_params_hidden(self, key, bel, shape=None):
+        shape = shape if shape is not None else (1,)
+        shape = (*shape, self.rank)
+        eps = jax.random.normal(key, shape)
+        params = jnp.einsum("ji,sj->si", bel.loading_hidden, eps) + bel.mean_hidden
+        return params
 
     def sample_fn(self, key, bel):
         params = self.sample_params(key, bel).squeeze()
-        def fn(x): return self.mean_fn(bel.mean_hidden, params, x).squeeze()
+        # params_hidden = self.sample_params_hidden(key, bel).squeeze()
+        params_hidden = bel.mean_hidden
+        def fn(x): return self.mean_fn(params_hidden, params, x).squeeze()
         return fn
 
 
@@ -125,6 +135,7 @@ class LowRankLastLayer(BaseFilter):
 
 
     def predict(self, bel):
+        return bel
         dimlast = len(bel.mean_last)
         loading_last = self.add_sqrt([bel.loading_last, self.dynamics_last * jnp.eye(dimlast)])
         bel = bel.replace(
@@ -134,14 +145,13 @@ class LowRankLastLayer(BaseFilter):
 
     def predictive_density(self, bel, x):
         yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x)
-        R_half = jnp.linalg.cholesky(jnp.atleast_2d(self.covariance(yhat)), upper=True)
+        R_half = jnp.linalg.cholesky(jnp.atleast_2d(self.covariance(bel)), upper=True)
         # Jacobian for hidden and last layer
         J_hidden = self.jac_hidden(bel.mean_hidden, bel.mean_last, x)
         J_last = self.jac_last(bel.mean_hidden, bel.mean_last, x)
 
         # Upper-triangular cholesky decomposition of the innovation
         S_half = self.add_sqrt([bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half])
-        # S_half = self.add_sqrt([bel.loading_last @ J_last.T, R_half])
         dist = distrax.Normal(loc=yhat, scale=S_half.squeeze())
         return dist
 
@@ -170,7 +180,7 @@ class LowRankLastLayer(BaseFilter):
         M_last = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_last))
 
         gain_hidden = M_hidden @ bel.loading_hidden.T @ bel.loading_hidden + M_hidden * self.dynamics_hidden
-        gain_last = M_last @ bel.loading_last.T @ bel.loading_last
+        gain_last = M_last @ bel.loading_last.T @ bel.loading_last + M_last * self.dynamics_last
 
         return err, gain_hidden, gain_last, J_hidden, J_last, R_half
 

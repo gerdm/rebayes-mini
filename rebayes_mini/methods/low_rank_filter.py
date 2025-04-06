@@ -78,6 +78,30 @@ class LowRankPrecisionFilter(BaseFilter):
         return fn
 
 
+    def predictive_density(self, bel, X):
+        """
+        Equation (59) - (61)
+        """
+        mean = self.mean_fn(bel.mean, X).astype(float)
+        Rt = jnp.atleast_2d(self.cov_fn(mean))
+
+        Ht = self.grad_mean(bel.mean, X)
+
+        diag_inverse = 1 / bel.diagonal
+        C1 = jnp.einsum("ji,j,jk->ik", bel.low_rank, diag_inverse, bel.low_rank)
+        C1 = jnp.linalg.inv(jnp.eye(self.rank) + C1)
+        C2 = jnp.einsum("i,ij,jk,lk,l->il", diag_inverse, bel.low_rank, C1, bel.low_rank, diag_inverse)
+        C3 = jnp.eye(len(bel.mean)) * diag_inverse  - C2
+        covariance = jnp.einsum("ij,jk,lk->il", Ht, C3, Ht) + Rt
+
+        predictive = distrax.MultivariateNormalFullCovariance(mean, covariance)
+        return predictive
+
+    def sample_predictive(self, key, bel, x):
+        dist = self.predictive_density(bel, x)
+        sample = dist.sample(seed=key)
+        return sample
+
     def predict(self, bel):
         I_lr = jnp.eye(self.rank)
         mean_pred = bel.mean
