@@ -90,9 +90,9 @@ class ExtendedFilter(BaseFilter):
 
 
     def predictive_density(self, bel, X):
-        eta = self.mean_fn(bel.mean, X).astype(float)
-        mean = self.mean(eta)
-        Rt = jnp.atleast_2d(self.covariance(eta, bel))
+        mean = self.mean_fn(bel.mean, X).astype(float)
+        # mean = self.mean(eta)
+        Rt = jnp.atleast_2d(self.cov_fn(mean))
         Ht = self.grad_mean(bel.mean, X)
         covariance = Ht @ bel.cov @ Ht.T + Rt
         mean = jnp.atleast_1d(mean)
@@ -126,6 +126,11 @@ class ExtendedFilter(BaseFilter):
         pcov_pred = bel.cov + self.dynamics_covariance * I
         bel = bel.replace(mean=pmean_pred, cov=pcov_pred)
         return bel
+
+    def sample_predictive(self, key, bel, x):
+        dist = self.predictive_density(bel, x)
+        sample = dist.sample(seed=key)
+        return sample
 
     def update(self, bel, bel_pred, y, x):
         yhat = self.mean_fn(bel.mean, x).astype(float)

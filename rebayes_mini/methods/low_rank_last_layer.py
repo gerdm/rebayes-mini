@@ -145,14 +145,16 @@ class LowRankLastLayer(BaseFilter):
 
     def predictive_density(self, bel, x):
         yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x)
-        R_half = jnp.linalg.cholesky(jnp.atleast_2d(self.covariance(bel)), upper=True)
+        R_half = jnp.linalg.cholesky(jnp.atleast_2d(self.covariance(yhat)), upper=True)
         # Jacobian for hidden and last layer
         J_hidden = self.jac_hidden(bel.mean_hidden, bel.mean_last, x)
         J_last = self.jac_last(bel.mean_hidden, bel.mean_last, x)
 
         # Upper-triangular cholesky decomposition of the innovation
-        S_half = self.add_sqrt([bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half])
-        dist = distrax.Normal(loc=yhat, scale=S_half.squeeze())
+        # S_half = self.add_sqrt([bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half])
+        S_half = jnp.r_[bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half]
+        dist = distrax.Normal(loc=yhat, scale=S_half.T @ S_half)
+        # dist = distrax.MultivariateNormalTri(yhat, S_half.T) # TODO: make sure this isn't breaking anything!
         return dist
 
 

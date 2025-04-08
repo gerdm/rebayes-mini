@@ -64,8 +64,9 @@ class LowRankCovarianceFilter(BaseFilter):
         W = bel.low_rank
 
         C = jnp.r_[W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half]
-
-        dist = distrax.Normal(loc=yhat, scale=C.squeeze())
+        # C = self.project(W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half)
+        pp_var = C.T @ C
+        dist = distrax.Normal(loc=yhat.squeeze(), scale=pp_var.squeeze())
         return dist
 
 
@@ -95,8 +96,9 @@ class LowRankCovarianceFilter(BaseFilter):
         ZZ = jnp.einsum("ij,kj->ik", Z, Z)
         singular_vectors, singular_values, _ = jnp.linalg.svd(ZZ, hermitian=True, full_matrices=False)
         singular_values = jnp.sqrt(singular_values) # square root of eigenvalues
+        singular_values_inv = jnp.where(singular_values != 0.0, 1 / singular_values, 0.0)
 
-        P = jnp.einsum("i,ji,jk->ik", 1 / singular_values, singular_vectors, Z)
+        P = jnp.einsum("i,ji,jk->ik", singular_values_inv, singular_vectors, Z)
         P = jnp.einsum("d,dD->dD", singular_values[:self.rank], P[:self.rank])
         return P
 
