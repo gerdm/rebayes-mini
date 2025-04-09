@@ -64,11 +64,9 @@ class LowRankCovarianceFilter(BaseFilter):
         W = bel.low_rank
 
         C = jnp.r_[W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half]
-        # C = self.project(W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half)
-        pp_var = C.T @ C
-        dist = distrax.Normal(loc=yhat.squeeze(), scale=pp_var.squeeze())
+        S = C.T @ C
+        dist = distrax.MultivariateNormalFullCovariance(loc=yhat, covariance_matrix=S)
         return dist
-
 
     def sample_predictive(self, key, bel, x):
         dist = self.predictive_density(bel, x)
@@ -118,8 +116,8 @@ class LowRankCovarianceFilter(BaseFilter):
         Ht = self.grad_mean_fn(bel.mean, x)
         W = bel.low_rank
 
-        # C = jnp.r_[W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half]
-        C = jnp.r_[W @ Ht.T, Rt_half]
+        C = jnp.r_[W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half]
+        # C = jnp.r_[W @ Ht.T, Rt_half]
         S_half = jnp.linalg.qr(C, mode="r") # Squared-root of innovation
 
         # transposed Kalman gain and innovation
