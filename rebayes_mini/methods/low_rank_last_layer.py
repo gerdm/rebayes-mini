@@ -73,8 +73,8 @@ class LowRankLastLayer(BaseFilter):
 
         key = jax.random.PRNGKey(key) if isinstance(key, int) else key
         loading_hidden = self._init_low_rank(key, nparams_hidden, cov_hidden, low_rank_diag)
-        # loading_last = cov_last * jnp.eye(nparams_last) # TODO: make it low rank as well?
-        loading_last  = orthogonal(key, nparams_last, nparams_last) * cov_last
+        loading_last = cov_last * jnp.eye(nparams_last) # TODO: make it low rank as well?
+        # loading_last  = orthogonal(key, nparams_last, nparams_last) * cov_last
 
         return LLLRState(
             mean_hidden=init_params_hidden,
@@ -153,8 +153,9 @@ class LowRankLastLayer(BaseFilter):
         # Upper-triangular cholesky decomposition of the innovation
         # S_half = self.add_sqrt([bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half])
         S_half = jnp.r_[bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half]
-        dist = distrax.Normal(loc=yhat, scale=S_half.T @ S_half)
-        # dist = distrax.MultivariateNormalTri(yhat, S_half.T) # TODO: make sure this isn't breaking anything!
+        S = jnp.einsum("ji,jk->ik", S_half, S_half)
+        # dist = distrax.Normal(loc=yhat, scale=S_half.T @ S_half)
+        dist = distrax.MultivariateNormalFullCovariance(loc=yhat, covariance_matrix=S)
         return dist
 
 
