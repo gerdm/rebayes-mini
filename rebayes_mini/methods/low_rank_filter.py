@@ -98,7 +98,7 @@ class LowRankPrecisionFilter(BaseFilter):
         
         cov1 = jnp.einsum("ij,kj,j->ik", Ht, Ht, diag_inverse)
         cov2 = jnp.einsum("ai,i,ij,jk,lk,l,bl->ab", Ht, diag_inverse, bel.low_rank, C1, bel.low_rank, diag_inverse, Ht)
-        covariance = cov1 + cov2
+        covariance = cov1 + cov2 + Rt
 
         predictive = distrax.MultivariateNormalFullCovariance(mean, covariance)
         return predictive

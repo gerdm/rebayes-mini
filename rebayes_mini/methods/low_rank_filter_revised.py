@@ -59,12 +59,12 @@ class LowRankCovarianceFilter(BaseFilter):
 
     def predictive_density(self, bel, x):
         yhat = self.mean_fn(bel.mean, x).astype(float)
-        Rt_half = jnp.linalg.cholesky(jnp.atleast_2d(self.cov_fn(yhat)), upper=True)
+        Rt = jnp.atleast_2d(self.cov_fn(yhat))
         Ht = self.grad_mean_fn(bel.mean, x)
         W = bel.low_rank
 
-        C = jnp.r_[W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half]
-        S = C.T @ C
+        C = jnp.r_[W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T]
+        S = C.T @ C + Rt
         dist = distrax.MultivariateNormalFullCovariance(loc=yhat, covariance_matrix=S)
         return dist
 
