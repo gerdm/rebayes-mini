@@ -108,6 +108,9 @@ class FifoSGD:
         bel = bel.apply_gradients(grads=grads)
         return loss, bel
 
+    def mean_fn(self, params, x):
+        return self.apply_fn(params, x)
+
     def update_state(self, bel, Xt, yt):
         bel = bel.apply_buffers(Xt, yt)
 
