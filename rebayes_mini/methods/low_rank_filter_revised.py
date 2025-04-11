@@ -125,6 +125,14 @@ class LowRankCovarianceFilter(BaseFilter):
         Kt_T = Mt @ W.T @ W + Mt * self.dynamics_covariance
         err = y - yhat
         return Kt_T, err, Rt_half, Ht
+
+
+    def predict_fn(self, bel, X):
+        """
+        Similar to self.mean_fn, but we pass the belief state (non-differentiable).
+        This is useful for the case when we want to predict using different agents.
+        """
+        return self.mean_fn(bel.mean, X)
     
     def update(self, bel, y, x):
         Kt_T, err, Rt_half, Ht = self._innovation_and_gain(bel, y, x)

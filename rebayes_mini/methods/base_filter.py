@@ -32,6 +32,9 @@ class BaseFilter(ABC):
 
         return rfn, mean_fn, flat_params
 
+    @abstractmethod
+    def predict_fn(self, bel, x):
+        ...
 
     @abstractmethod
     def init_bel(self):

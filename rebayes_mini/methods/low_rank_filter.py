@@ -78,6 +78,14 @@ class LowRankPrecisionFilter(BaseFilter):
         return fn
 
 
+    def predict_fn(self, bel, X):
+        """
+        Similar to self.mean_fn, but we pass the belief state (non-differentiable).
+        This is useful for the case when we want to predict using different agents.
+        """
+        return self.mean_fn(bel.mean, X)
+
+
     def predictive_density(self, bel, X):
         """
         Equation (59) - (61)

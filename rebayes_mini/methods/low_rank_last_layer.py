@@ -202,6 +202,13 @@ class LowRankLastLayer(BaseFilter):
             bel.loading_last - bel.loading_last @ J.T @ gain, R_half @ gain
         ])
         return mean_last, loading_last
+    
+    def predict_fn(self, bel, X):
+        """
+        Similar to self.mean_fn, but we pass the belief state (non-differentiable).
+        This is useful for the case when we want to predict using different agents.
+        """
+        return self.mean_fn(bel.mean_hidden, bel.mean_last, X)
 
 
     def update(self, bel, y, x):

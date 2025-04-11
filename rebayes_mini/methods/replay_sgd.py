@@ -95,7 +95,7 @@ class FifoSGD:
         )
         return bel_init
 
-    def predict_obs(self, bel, X):
+    def predict_fn(self, bel, X):
         yhat = self.apply_fn(bel.params, X)
         return yhat
 
