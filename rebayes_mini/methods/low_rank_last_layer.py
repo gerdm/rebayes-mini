@@ -27,9 +27,9 @@ def orthogonal(key, n, m):
 
 
 class LowRankLastLayer(BaseFilter):
-    def __init__(self, mean_fn_tree, covariance_fn, rank, dynamics_hidden, dynamics_last):
-        self.mean_fn_tree = mean_fn_tree
-        self.covariance = covariance_fn
+    def __init__(self, mean_fn, cov_fn, rank, dynamics_hidden, dynamics_last):
+        self.mean_fn_tree = mean_fn
+        self.covariance = cov_fn
         self.rank = rank
         self.dynamics_hidden = dynamics_hidden
         self.dynamics_last = dynamics_last

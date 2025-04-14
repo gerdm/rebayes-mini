@@ -95,9 +95,13 @@ class FifoSGD:
         )
         return bel_init
 
-    def predict_fn(self, bel, X):
+    def predict_obs(self, bel, X):
         yhat = self.apply_fn(bel.params, X)
         return yhat
+
+    def predict_fn(self, bel, X):
+        # TODO: remove duplicate code
+        return self.predict_obs(bel, X)
 
     def _train_step(
         self,
