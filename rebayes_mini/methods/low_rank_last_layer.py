@@ -59,7 +59,14 @@ class LowRankLastLayer(BaseFilter):
         if diag:
             loading_hidden = cov * jnp.fill_diagonal(jnp.zeros((self.rank, nparams)), jnp.ones(nparams), inplace=False)
         else:
-            loading_hidden = cov * orthogonal(key, self.rank, nparams)
+            print("Using QR decomposition to initialize low-rank matrix")
+            key_Q, key_R = jax.random.split(key)
+            A = jax.random.normal(key_Q, (self.rank, self.rank))
+            Q, _ = jnp.linalg.qr(A)
+            
+            P = jax.random.normal(key_R, (self.rank, nparams))
+            loading_hidden = Q @ P * cov
+            # loading_hidden = cov * orthogonal(key, self.rank, nparams)
 
         return loading_hidden
 
@@ -144,16 +151,19 @@ class LowRankLastLayer(BaseFilter):
         return bel
 
     def predictive_density(self, bel, x):
-        yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x)
-        R_half = jnp.linalg.cholesky(jnp.atleast_2d(self.covariance(yhat)), upper=True)
+        yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x).astype(float)
+        Rt = jnp.atleast_2d(self.covariance(yhat))
         # Jacobian for hidden and last layer
         J_hidden = self.jac_hidden(bel.mean_hidden, bel.mean_last, x)
         J_last = self.jac_last(bel.mean_hidden, bel.mean_last, x)
 
         # Upper-triangular cholesky decomposition of the innovation
-        # S_half = self.add_sqrt([bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half])
-        S_half = jnp.r_[bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half]
-        S = jnp.einsum("ji,jk->ik", S_half, S_half)
+        # S_half = jnp.r_[bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half]
+        C = jnp.r_[
+            bel.loading_hidden @ J_hidden.T, jnp.sqrt(self.dynamics_hidden) * J_hidden.T,
+            bel.loading_last @ J_last.T, jnp.sqrt(self.dynamics_last) * J_last.T,
+        ]
+        S = jnp.einsum("ji,jk->ik", C, C) + Rt
         # dist = distrax.Normal(loc=yhat, scale=S_half.T @ S_half)
         dist = distrax.MultivariateNormalFullCovariance(loc=yhat, covariance_matrix=S)
         return dist
@@ -176,7 +186,11 @@ class LowRankLastLayer(BaseFilter):
         err = y - yhat
 
         # Upper-triangular cholesky decomposition of the innovation
-        S_half = self.add_sqrt([bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half])
+        S_half = self.add_sqrt([
+            bel.loading_hidden @ J_hidden.T, jnp.sqrt(self.dynamics_hidden) * J_hidden.T,
+            bel.loading_last @ J_last.T, jnp.sqrt(self.dynamics_last) * J_last.T,
+            R_half
+        ])
 
         # Transposed gain matrices
         M_hidden = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_hidden))
