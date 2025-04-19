@@ -2,9 +2,9 @@ import jax
 import chex
 import distrax
 import jax.numpy as jnp
-from rebayes_mini.methods.base_filter import BaseFilter
 from jax.flatten_util import ravel_pytree
-from rebayes_mini import callbacks
+from jax.scipy.linalg import solve_triangular
+from rebayes_mini.methods.base_filter import BaseFilter
 
 @chex.dataclass
 class LLLRState:
@@ -143,12 +143,7 @@ class LowRankLastLayer(BaseFilter):
 
     def predict(self, bel):
         return bel
-        dimlast = len(bel.mean_last)
-        loading_last = self.add_sqrt([bel.loading_last, self.dynamics_last * jnp.eye(dimlast)])
-        bel = bel.replace(
-            loading_last=loading_last
-        )
-        return bel
+
 
     def predictive_density(self, bel, x):
         yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x).astype(float)
@@ -193,8 +188,8 @@ class LowRankLastLayer(BaseFilter):
         ])
 
         # Transposed gain matrices
-        M_hidden = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_hidden))
-        M_last = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_last))
+        M_hidden = solve_triangular(S_half, solve_triangular(S_half.T, J_hidden, lower=True), lower=False)
+        M_last = solve_triangular(S_half, solve_triangular(S_half.T, J_last, lower=True), lower=False)
 
         gain_hidden = M_hidden @ bel.loading_hidden.T @ bel.loading_hidden + M_hidden * self.dynamics_hidden
         gain_last = M_last @ bel.loading_last.T @ bel.loading_last + M_last * self.dynamics_last
@@ -239,119 +234,3 @@ class LowRankLastLayer(BaseFilter):
         )
         return bel
 
-
-class LowRankLastLayerIt(LowRankLastLayer):
-    def __init__(self, apply_fn, covariance_fn, rank, dynamics_hidden, dynamics_last, n_it_hidden, n_it_last):
-        super().__init__(apply_fn, covariance_fn, rank, dynamics_hidden, dynamics_last)
-        self.n_it_hidden = n_it_hidden
-        self.n_it_last = n_it_last
-
-    def innovation_grads(self, bel, bel_prior, y, x):
-        yhat = self.mean_fn(bel.mean_hidden, bel.mean_last, x)
-        R_half = jnp.linalg.cholesky(jnp.atleast_2d(self.covariance(yhat)), upper=True)
-        # Jacobian for hidden and last layer
-        J_hidden = self.jac_hidden(bel.mean_hidden, bel.mean_last, x)
-        J_last = self.jac_last(bel.mean_hidden, bel.mean_last, x)
-
-        # Innovation
-        err = y - yhat - J_hidden @ (bel_prior.mean_hidden - bel.mean_hidden) - J_last @ (bel_prior.mean_last - bel.mean_last)
-
-        # Upper-triangular cholesky decomposition of the innovation
-        S_half = self.add_sqrt([bel_prior.loading_hidden @ J_hidden.T, bel_prior.loading_last @ J_last.T, R_half])
-
-        return err, J_hidden, J_last, S_half, R_half
-
-
-    def update_hidden(self, bel, bel_prior, y, x):
-        err, J_hidden, J_last, S_half, R_half = self.innovation_grads(bel, bel_prior, y, x)
-        # Transposed gain matrices
-        M_hidden = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_hidden))
-        gain_hidden = M_hidden @ bel_prior.loading_hidden.T @ bel_prior.loading_hidden + M_hidden * self.dynamics_hidden
-
-        mean_hidden = bel.mean_hidden + jnp.einsum("ij,i->j", gain_hidden, err)
-        loading_hidden = self.add_project([
-            bel.loading_hidden - bel.loading_hidden @ J_hidden.T @ gain_hidden, R_half @ gain_hidden
-        ])
-
-        bel = bel.replace(
-            mean_hidden=mean_hidden,
-            loading_hidden=loading_hidden,
-        )
-
-        return bel
-
-
-    def update_last(self, bel, bel_prior, y, x):
-        err, J_hidden, J_last, S_half, R_half = self.innovation_grads(bel, bel_prior, y, x)
-        # Transposed gain matrices
-        M_last = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_last))
-        gain_last = M_last @ bel_prior.loading_last.T @ bel_prior.loading_last + M_last * self.dynamics_last
-
-        mean_last = bel.mean_last + jnp.einsum("ij,i->j", gain_last, err)
-
-        loading_last = self.add_sqrt([
-            bel.loading_last - bel.loading_last @ J_last.T @ gain_last, R_half @ gain_last
-        ])
-
-        bel = bel.replace(
-            mean_last=mean_last,
-            loading_last=loading_last,
-        )
-
-        return bel
-
-    def update(self, bel, bel_prior, y, x):
-        err, J_hidden, J_last, S_half, R_half = self.innovation_grads(bel, bel_prior, y, x)
-
-        M_hidden = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_hidden))
-        gain_hidden = M_hidden @ bel_prior.loading_hidden.T @ bel_prior.loading_hidden + M_hidden * self.dynamics_hidden
-
-        mean_hidden = bel.mean_hidden + jnp.einsum("ij,i->j", gain_hidden, err)
-        loading_hidden = self.add_project([
-            bel.loading_hidden - bel.loading_hidden @ J_hidden.T @ gain_hidden, R_half @ gain_hidden
-        ])
-
-        M_last = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, J_last))
-        gain_last = M_last @ bel_prior.loading_last.T @ bel_prior.loading_last + M_last * self.dynamics_last
-
-        mean_last = bel.mean_last + jnp.einsum("ij,i->j", gain_last, err)
-
-        loading_last = self.add_sqrt([
-            bel.loading_last - bel.loading_last @ J_last.T @ gain_last, R_half @ gain_last
-        ])
-
-        bel = bel.replace(
-            mean_hidden=mean_hidden,
-            loading_hidden=loading_hidden,
-            mean_last=mean_last,
-            loading_last=loading_last,
-        )
-
-        return bel
-
-
-    def step(self, bel, y, x, callback_fn):
-        bel_pred = self.predict(bel)
-
-        _update_last = lambda _, bel: self.update_last(bel, bel_pred, y, x)
-        bel_update = jax.lax.fori_loop(0, self.n_it_last, _update_last, bel_pred, unroll=self.n_it_last)
-
-        _update_hidden = lambda _, bel: self.update_hidden(bel, bel_pred, y, x)
-        bel_update = jax.lax.fori_loop(0, self.n_it_hidden, _update_hidden, bel_update, unroll=self.n_it_hidden)
-
-        # _update = lambda _, bel: self.update(bel, bel_pred, y, x)
-        # bel_update = jax.lax.fori_loop(0, self.n_it_last, _update, bel_pred, unroll=self.n_it_last)
-
-        output = callback_fn(bel_update, bel_pred, y, x)
-        return bel_update, output
-
-
-    def scan(self, bel, y, X, callback_fn=None):
-        callback_fn = callbacks.get_null if callback_fn is None else callback_fn
-        def _step(bel, yX):
-            y, x = yX
-            bel, out = self.step(bel, y, x, callback_fn)
-            return bel, out
-
-        bel, hist = jax.lax.scan(_step, bel, (y, X))
-        return bel, hist

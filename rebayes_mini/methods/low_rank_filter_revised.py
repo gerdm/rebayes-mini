@@ -3,6 +3,7 @@ import chex
 import distrax
 import jax.numpy as jnp
 from functools import partial
+from jax.scipy.linalg import solve_triangular
 from rebayes_mini.methods.base_filter import BaseFilter
 
 @chex.dataclass
@@ -121,7 +122,7 @@ class LowRankCovarianceFilter(BaseFilter):
         S_half = jnp.linalg.qr(C, mode="r") # Squared-root of innovation
 
         # transposed Kalman gain and innovation
-        Mt = jnp.linalg.solve(S_half, jnp.linalg.solve(S_half.T, Ht))
+        Mt = solve_triangular(S_half, solve_triangular(S_half.T, Ht, lower=True), lower=False)
         Kt_T = Mt @ W.T @ W + Mt * self.dynamics_covariance
         err = y - yhat
         return Kt_T, err, Rt_half, Ht
@@ -134,6 +135,7 @@ class LowRankCovarianceFilter(BaseFilter):
         """
         return self.mean_fn(bel.mean, X)
     
+
     def update(self, bel, y, x):
         Kt_T, err, Rt_half, Ht = self._innovation_and_gain(bel, y, x)
         mean_update = bel.mean + jnp.einsum("ij,i->j", Kt_T, err)
