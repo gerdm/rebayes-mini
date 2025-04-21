@@ -27,12 +27,13 @@ def orthogonal(key, n, m):
 
 
 class LowRankLastLayer(BaseFilter):
-    def __init__(self, mean_fn, cov_fn, rank, dynamics_hidden, dynamics_last):
+    def __init__(self, mean_fn, cov_fn, rank, dynamics_hidden, dynamics_last, rank_last=None):
         self.mean_fn_tree = mean_fn
         self.covariance = cov_fn
         self.rank = rank
         self.dynamics_hidden = dynamics_hidden
         self.dynamics_last = dynamics_last
+        self.rank_last = rank_last if rank_last is not None else -1
 
 
     def _initialise_flat_fn(self, apply_fn, params):
@@ -55,23 +56,26 @@ class LowRankLastLayer(BaseFilter):
         return rfn, mean_fn, flat_params_hidden, flat_params_last
 
 
-    def _init_low_rank(self, key, nparams, cov, diag):
+    def _init_low_rank(self, key, nparams, cov, diag, rank):
         if diag:
-            loading_hidden = cov * jnp.fill_diagonal(jnp.zeros((self.rank, nparams)), jnp.ones(nparams), inplace=False)
+            loading_hidden = cov * jnp.fill_diagonal(jnp.zeros((rank, nparams)), jnp.ones(nparams), inplace=False)
         else:
             print("Using QR decomposition to initialize low-rank matrix")
             key_Q, key_R = jax.random.split(key)
-            A = jax.random.normal(key_Q, (self.rank, self.rank))
+            A = jax.random.normal(key_Q, (rank, rank))
             Q, _ = jnp.linalg.qr(A)
             
-            P = jax.random.normal(key_R, (self.rank, nparams))
-            loading_hidden = Q @ P * cov
-            # loading_hidden = cov * orthogonal(key, self.rank, nparams)
+            P = jax.random.normal(key_R, (rank, nparams))
+            loading_hidden = Q @ P
+            loading_hidden = loading_hidden / jnp.linalg.norm(loading_hidden, axis=-1, keepdims=True) * jnp.sqrt(cov)
+            # loading_hidden = cov * orthogonal(key, rank, nparams)
 
         return loading_hidden
 
 
-    def init_bel(self, params, cov_hidden=1.0, cov_last=1.0, low_rank_diag=True, key=314):
+    def init_bel(
+        self, params, cov_hidden=1.0, cov_last=1.0, low_rank_diag=True, low_rank_diag_last=True, key=314
+    ):
         self.rfn, self.mean_fn, init_params_hidden, init_params_last = self._initialise_flat_fn(self.mean_fn_tree, params)
         self.jac_hidden = jax.jacrev(self.mean_fn, argnums=0)
         self.jac_last = jax.jacrev(self.mean_fn, argnums=1)
@@ -79,8 +83,12 @@ class LowRankLastLayer(BaseFilter):
         nparams_last = len(init_params_last)
 
         key = jax.random.PRNGKey(key) if isinstance(key, int) else key
-        loading_hidden = self._init_low_rank(key, nparams_hidden, cov_hidden, low_rank_diag)
-        loading_last = cov_last * jnp.eye(nparams_last) # TODO: make it low rank as well?
+        key_hidden, key_last = jax.random.split(key)
+        loading_hidden = self._init_low_rank(key_hidden, nparams_hidden, cov_hidden, low_rank_diag, self.rank)
+
+        self.rank_last = loading_hidden.shape[0] if self.rank_last == -1 else self.rank_last
+        loading_last = self._init_low_rank(key_last, nparams_last, cov_last, low_rank_diag_last, self.rank_last)
+        # loading_last = cov_last * jnp.eye(nparams_last) # TODO: make it low rank as well?
         # loading_last  = orthogonal(key, nparams_last, nparams_last) * cov_last
 
         return LLLRState(
@@ -125,7 +133,7 @@ class LowRankLastLayer(BaseFilter):
         return C_half
 
 
-    def add_project(self, matrices):
+    def add_project(self, matrices, rank, diag_dynamics=0.0):
         """
         Obtain rank-d matrix P such that
         P^T P approx A1 + A2 + ... + Ak
@@ -133,11 +141,11 @@ class LowRankLastLayer(BaseFilter):
         Z = jnp.vstack(matrices)
         ZZ = jnp.einsum("ij,kj->ik", Z, Z)
         singular_vectors, singular_values, _ = jnp.linalg.svd(ZZ, hermitian=True, full_matrices=False)
-        singular_values = jnp.sqrt(singular_values) # square root of eigenvalues
+        singular_values = jnp.sqrt(singular_values + diag_dynamics) # square root of eigenvalues
         singular_values_inv = jnp.where(singular_values != 0.0, 1 / singular_values, 0.0)
 
         P = jnp.einsum("i,ji,jk->ik", singular_values_inv, singular_vectors, Z)
-        P = jnp.einsum("d,dD->dD", singular_values[:self.rank], P[:self.rank])
+        P = jnp.einsum("d,dD->dD", singular_values[:rank], P[:rank])
         return P
 
 
@@ -201,15 +209,16 @@ class LowRankLastLayer(BaseFilter):
         mean_hidden = bel.mean_hidden + jnp.einsum("ij,i->j", gain, err)
         loading_hidden = self.add_project([
             bel.loading_hidden - bel.loading_hidden @ J.T @ gain, R_half @ gain
-        ])
+        ], rank=self.rank, diag_dynamics=self.dynamics_hidden)
         return mean_hidden, loading_hidden
 
 
     def _update_last(self, bel, J, gain, R_half, err):
+        dim_params = bel.mean_last.shape[0]
         mean_last = bel.mean_last + jnp.einsum("ij,i->j", gain, err)
-        loading_last = self.add_sqrt([
+        loading_last = self.add_project([
             bel.loading_last - bel.loading_last @ J.T @ gain, R_half @ gain
-        ])
+        ], rank=self.rank_last, diag_dynamics=self.dynamics_last)
         return mean_last, loading_last
     
     def predict_fn(self, bel, X):

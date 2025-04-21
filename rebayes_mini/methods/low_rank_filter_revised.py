@@ -36,7 +36,16 @@ class LowRankCovarianceFilter(BaseFilter):
         if diag:
             loading_hidden = cov * jnp.fill_diagonal(jnp.zeros((self.rank, nparams)), jnp.ones(nparams), inplace=False)
         else:
-            loading_hidden = cov * orthogonal(key, self.rank, nparams)
+            # loading_hidden = cov * orthogonal(key, self.rank, nparams)
+            print("Using QR decomposition to initialize low-rank matrix.")
+            key_Q, key_R = jax.random.split(key)
+            A = jax.random.normal(key_Q, (self.rank, self.rank))
+            Q, _ = jnp.linalg.qr(A)
+            
+            P = jax.random.normal(key_R, (self.rank, nparams))
+            loading_hidden = Q @ P
+            loading_hidden = loading_hidden / jnp.linalg.norm(loading_hidden, axis=-1, keepdims=True) * jnp.sqrt(cov)
+
 
         return loading_hidden
 
@@ -80,13 +89,14 @@ class LowRankCovarianceFilter(BaseFilter):
         self.grad_mean_fn = jax.jacrev(self.mean_fn)
         nparams = len(init_params)
         low_rank = self._init_low_rank(key, nparams, cov, low_rank_diag)
+        print(low_rank.shape)
 
         return LowRankState(
             mean=init_params,
             low_rank=low_rank,
         )
 
-    def project(self, *matrices):
+    def project(self, cst, *matrices):
         """
         Create rank-d matrix P such that
         P^T P approx A + B
@@ -94,7 +104,7 @@ class LowRankCovarianceFilter(BaseFilter):
         Z = jnp.vstack(matrices)
         ZZ = jnp.einsum("ij,kj->ik", Z, Z)
         singular_vectors, singular_values, _ = jnp.linalg.svd(ZZ, hermitian=True, full_matrices=False)
-        singular_values = jnp.sqrt(singular_values) # square root of eigenvalues
+        singular_values = jnp.sqrt(singular_values + cst) # square root of eigenvalues
         singular_values_inv = jnp.where(singular_values != 0.0, 1 / singular_values, 0.0)
 
         P = jnp.einsum("i,ji,jk->ik", singular_values_inv, singular_vectors, Z)
@@ -139,8 +149,11 @@ class LowRankCovarianceFilter(BaseFilter):
     def update(self, bel, y, x):
         Kt_T, err, Rt_half, Ht = self._innovation_and_gain(bel, y, x)
         mean_update = bel.mean + jnp.einsum("ij,i->j", Kt_T, err)
-        low_rank_update = self.project(
-            bel.low_rank - bel.low_rank @ Ht.T @ Kt_T, Rt_half @ Kt_T
+        nparams = len(bel.mean)
+        # diag_indices = jnp.diag_indices(nparams)
+        low_rank_update = self.project(self.dynamics_covariance,
+            bel.low_rank - bel.low_rank @ Ht.T @ Kt_T,
+            Rt_half @ Kt_T
         )
 
         bel = bel.replace(
