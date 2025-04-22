@@ -33,7 +33,7 @@ class LowRankLastLayer(BaseFilter):
         self.rank = rank
         self.dynamics_hidden = dynamics_hidden
         self.dynamics_last = dynamics_last
-        self.rank_last = rank_last if rank_last is not None else -1
+        self.rank_last = rank_last 
 
 
     def _initialise_flat_fn(self, apply_fn, params):
@@ -60,7 +60,6 @@ class LowRankLastLayer(BaseFilter):
         if diag:
             loading_hidden = cov * jnp.fill_diagonal(jnp.zeros((rank, nparams)), jnp.ones(nparams), inplace=False)
         else:
-            print("Using QR decomposition to initialize low-rank matrix")
             key_Q, key_R = jax.random.split(key)
             A = jax.random.normal(key_Q, (rank, rank))
             Q, _ = jnp.linalg.qr(A)
@@ -68,13 +67,12 @@ class LowRankLastLayer(BaseFilter):
             P = jax.random.normal(key_R, (rank, nparams))
             loading_hidden = Q @ P
             loading_hidden = loading_hidden / jnp.linalg.norm(loading_hidden, axis=-1, keepdims=True) * jnp.sqrt(cov)
-            # loading_hidden = cov * orthogonal(key, rank, nparams)
 
         return loading_hidden
 
 
     def init_bel(
-        self, params, cov_hidden=1.0, cov_last=1.0, low_rank_diag=True, low_rank_diag_last=True, key=314
+        self, params, cov_hidden=1.0, cov_last=1.0, low_rank_diag=True, diag_last=True, key=314
     ):
         self.rfn, self.mean_fn, init_params_hidden, init_params_last = self._initialise_flat_fn(self.mean_fn_tree, params)
         self.jac_hidden = jax.jacrev(self.mean_fn, argnums=0)
@@ -86,10 +84,9 @@ class LowRankLastLayer(BaseFilter):
         key_hidden, key_last = jax.random.split(key)
         loading_hidden = self._init_low_rank(key_hidden, nparams_hidden, cov_hidden, low_rank_diag, self.rank)
 
-        self.rank_last = loading_hidden.shape[0] if self.rank_last == -1 else self.rank_last
-        loading_last = self._init_low_rank(key_last, nparams_last, cov_last, low_rank_diag_last, self.rank_last)
-        # loading_last = cov_last * jnp.eye(nparams_last) # TODO: make it low rank as well?
-        # loading_last  = orthogonal(key, nparams_last, nparams_last) * cov_last
+        # TODO: add check  that low-ranks lower than or equal to nparams
+        rank_last =  self.rank_last if self.rank_last is not None else nparams_last
+        loading_last = self._init_low_rank(key_last, nparams_last, cov_last, diag_last, rank_last)
 
         return LLLRState(
             mean_hidden=init_params_hidden,
@@ -161,13 +158,11 @@ class LowRankLastLayer(BaseFilter):
         J_last = self.jac_last(bel.mean_hidden, bel.mean_last, x)
 
         # Upper-triangular cholesky decomposition of the innovation
-        # S_half = jnp.r_[bel.loading_hidden @ J_hidden.T, bel.loading_last @ J_last.T, R_half]
         C = jnp.r_[
             bel.loading_hidden @ J_hidden.T, jnp.sqrt(self.dynamics_hidden) * J_hidden.T,
             bel.loading_last @ J_last.T, jnp.sqrt(self.dynamics_last) * J_last.T,
         ]
         S = jnp.einsum("ji,jk->ik", C, C) + Rt
-        # dist = distrax.Normal(loc=yhat, scale=S_half.T @ S_half)
         dist = distrax.MultivariateNormalFullCovariance(loc=yhat, covariance_matrix=S)
         return dist
 
@@ -214,13 +209,23 @@ class LowRankLastLayer(BaseFilter):
 
 
     def _update_last(self, bel, J, gain, R_half, err):
-        dim_params = bel.mean_last.shape[0]
         mean_last = bel.mean_last + jnp.einsum("ij,i->j", gain, err)
-        loading_last = self.add_project([
-            bel.loading_last - bel.loading_last @ J.T @ gain, R_half @ gain
-        ], rank=self.rank_last, diag_dynamics=self.dynamics_last)
+
+        if self.rank_last is None:
+            # Is full rank
+            loading_last = self.add_sqrt([
+                bel.loading_last - bel.loading_last @ J.T @ gain, R_half @ gain
+            ])
+        else:
+            # Is low rank
+            loading_last = self.add_project([
+                bel.loading_last - bel.loading_last @ J.T @ gain, R_half @ gain
+            ], rank=self.rank_last, diag_dynamics=self.dynamics_last)
+
+
         return mean_last, loading_last
     
+
     def predict_fn(self, bel, X):
         """
         Similar to self.mean_fn, but we pass the belief state (non-differentiable).

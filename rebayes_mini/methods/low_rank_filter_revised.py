@@ -89,7 +89,6 @@ class LowRankCovarianceFilter(BaseFilter):
         self.grad_mean_fn = jax.jacrev(self.mean_fn)
         nparams = len(init_params)
         low_rank = self._init_low_rank(key, nparams, cov, low_rank_diag)
-        print(low_rank.shape)
 
         return LowRankState(
             mean=init_params,

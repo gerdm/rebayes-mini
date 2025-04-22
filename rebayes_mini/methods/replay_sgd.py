@@ -126,6 +126,10 @@ class FifoSGD:
         _, bel = self._train_step(bel)
         return bel
     
+    def update(self, bel, yt, Xt):
+        bel = self.update_state(bel, Xt, yt)
+        return bel
+
     def _step(self, bel, xs, callback_fn):
         X, y = xs
         bel_update = self.update_state(bel, X, y)
