@@ -11,6 +11,9 @@ class LowRankState:
     """State of the Low Rank Filter"""
     mean: chex.Array
     low_rank: chex.Array
+    epull: float =  0.0
+    econs: float = 0.0
+    q: float = 0.0
 
 def orthogonal(key, n, m):
     """
@@ -37,7 +40,6 @@ class LowRankCovarianceFilter(BaseFilter):
             loading_hidden = cov * jnp.fill_diagonal(jnp.zeros((self.rank, nparams)), jnp.ones(nparams), inplace=False)
         else:
             # loading_hidden = cov * orthogonal(key, self.rank, nparams)
-            print("Using QR decomposition to initialize low-rank matrix.")
             key_Q, key_R = jax.random.split(key)
             A = jax.random.normal(key_Q, (self.rank, self.rank))
             Q, _ = jnp.linalg.qr(A)
@@ -108,31 +110,33 @@ class LowRankCovarianceFilter(BaseFilter):
 
         P = jnp.einsum("i,ji,jk->ik", singular_values_inv, singular_vectors, Z)
         P = jnp.einsum("d,dD->dD", singular_values[:self.rank], P[:self.rank])
-        return P
+        eigvals  = singular_values ** 2
+        return P, eigvals
 
     def predict(self, bel):
         mean_pred = bel.mean
         low_rank_pred = bel.low_rank
 
+        gamma = 1.0
         bel_pred = bel.replace(
-            mean=mean_pred,
-            low_rank=low_rank_pred,
+            mean=gamma * mean_pred,
+            low_rank=gamma * low_rank_pred,
         )
         return bel_pred
     
-    def _innovation_and_gain(self, bel, y, x):
+    def _innovation_and_gain(self, bel, y, x, q):
         yhat = self.mean_fn(bel.mean, x).astype(float)
         Rt_half = jnp.linalg.cholesky(jnp.atleast_2d(self.cov_fn(yhat)), upper=True)
         Ht = self.grad_mean_fn(bel.mean, x)
         W = bel.low_rank
 
-        C = jnp.r_[W @ Ht.T, jnp.sqrt(self.dynamics_covariance) * Ht.T, Rt_half]
+        C = jnp.r_[W @ Ht.T, jnp.sqrt(q) * Ht.T, Rt_half]
         # C = jnp.r_[W @ Ht.T, Rt_half]
         S_half = jnp.linalg.qr(C, mode="r") # Squared-root of innovation
 
         # transposed Kalman gain and innovation
         Mt = solve_triangular(S_half, solve_triangular(S_half.T, Ht, lower=True), lower=False)
-        Kt_T = Mt @ W.T @ W + Mt * self.dynamics_covariance
+        Kt_T = Mt @ W.T @ W + Mt * q
         err = y - yhat
         return Kt_T, err, Rt_half, Ht
 
@@ -146,18 +150,35 @@ class LowRankCovarianceFilter(BaseFilter):
     
 
     def update(self, bel, y, x):
-        Kt_T, err, Rt_half, Ht = self._innovation_and_gain(bel, y, x)
+        q = self.dynamics_covariance
+        Kt_T, err, Rt_half, Ht = self._innovation_and_gain(bel, y, x, q)
         mean_update = bel.mean + jnp.einsum("ij,i->j", Kt_T, err)
-        nparams = len(bel.mean)
-        # diag_indices = jnp.diag_indices(nparams)
-        low_rank_update = self.project(self.dynamics_covariance,
+
+
+        low_rank_update, eigvals = self.project(q,
             bel.low_rank - bel.low_rank @ Ht.T @ Kt_T,
             Rt_half @ Kt_T
         )
 
+        vnorm = jnp.sqrt(jnp.einsum("ji,jk,lk,li->", Kt_T, Ht, Ht, Kt_T, optimize=True))
+        eps_pull = (2 * vnorm + vnorm ** 2)
+        eps_trunc = jnp.sqrt(jnp.sum(eigvals[self.rank:]**2))
+        # norm_tilde = jnp.sqrt(jnp.sum(eigvals**2))
+
+        # rho = 0.1
+        # q = (rho * norm_tilde - eps_trunc) / epull
+        # q = jnp.clip(q, 0.0, 0.5)
+
+        epull = q * eps_pull
+        econs = eps_trunc
+        # relative_fro_error = epull + econs
+
         bel = bel.replace(
             mean=mean_update,
-            low_rank=low_rank_update
+            low_rank=low_rank_update,
+            epull=epull,
+            econs=econs,
+            q=q
         )
         return bel
 

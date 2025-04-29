@@ -1,5 +1,6 @@
 import jax
 import chex
+import distrax
 import jax.numpy as jnp
 from functools import partial
 from rebayes_mini.methods.base_filter import BaseFilter
@@ -130,8 +131,33 @@ class GaussianProcessRegression(BaseFilter):
         return cov_test_train, var_train, var_test
 
 
+    def predictive_density(self, bel, x):
+        x = jnp.atleast_2d(x)
+        cov_test_train, var_train, var_test = self._build_kernel_matrices(bel, x)
+        K = jnp.linalg.lstsq(var_train, cov_test_train.T)[0].T
+        is_empty = jnp.all(bel.counter == 0.0)
+
+        # posterior predictive mean
+        mu_pred = jax.lax.cond(
+            is_empty,
+            lambda: jnp.zeros(len(x)),
+            lambda: K @ bel.y 
+        )
+
+        # Posterior predictive variance-covariance matrix
+        cov_pred = jax.lax.cond(
+            is_empty,
+            lambda: var_test,
+            lambda: var_test - jnp.einsum("ij,jk,lk->il", K, var_train, K,  precision="highest")
+        )
+
+        pp = distrax.MultivariateNormalFullCovariance(
+            loc=jnp.atleast_1d(mu_pred),
+            covariance_matrix=jnp.atleast_2d(cov_pred)
+        )
+        return pp
+    
     def sample_fn(self, key, bel):
-        # TODO: double check that nothing funny is happening the K when buffer is not filled
         def fn(x):
             cov_test_train, var_train, var_test = self._build_kernel_matrices(bel, x)
             K = jnp.linalg.lstsq(var_train, cov_test_train.T)[0].T
@@ -156,8 +182,14 @@ class GaussianProcessRegression(BaseFilter):
         return fn
 
 
+
     def mean_fn(self, bel, x):
         cov_test_train, var_train, _ = self._build_kernel_matrices(bel, x)
         # Takes care of rows and columns set to zero
         K = jnp.linalg.lstsq(var_train, cov_test_train.T)[0].T
         return K @ bel.y
+    
+
+    def predict_fn(self, bel, X):
+        return self.mean_fn(bel, X)
+
