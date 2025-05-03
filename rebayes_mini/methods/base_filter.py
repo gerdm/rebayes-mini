@@ -134,9 +134,12 @@ class ExtendedFilter(BaseFilter):
         dist = self.predictive_density(bel, x)
         sample = dist.sample(seed=key)
         return sample
+    
+    def predict_fn(self, bel, x):
+        return self.mean_fn(bel.mean, x).astype(float)
 
     def update(self, bel, bel_pred, y, x):
-        yhat = self.mean_fn(bel.mean, x).astype(float)
+        yhat = self.predict_fn(bel, x)
         Rt = jnp.atleast_2d(self.cov_fn(yhat))
 
         Ht = self.grad_mean(bel.mean, x)
@@ -233,8 +236,11 @@ class SquareRootFilter(BaseFilter):
         bel = bel.replace(mean=pmean_pred, W=W_pred)
         return bel
 
+    def predict_fn(self, bel, x):
+        return self.mean_fn(bel.mean, x).astype(float)
+
     def update(self, bel, bel_pred, y, x):
-        yhat = self.mean_fn(bel.mean, x).astype(float)
+        yhat = self.predict_fn(bel, x)
         Rt = jnp.atleast_2d(self.cov_fn(yhat))
         R_half = jnp.linalg.cholesky(Rt)
 
