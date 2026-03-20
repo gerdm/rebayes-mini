@@ -123,6 +123,15 @@ class ExtendedKalmanFilter:
 
         bel = bel.replace(mean=mean_update, cov=cov_update)
         return bel
+    
+    def log_predictive_density(self, y, x, bel):
+        yhat = self.vobs_fn(bel.mean, x)
+        Ht = self.jac_obs(bel.mean, x)
+        Rt = self.observation_covariance
+        St = Ht @ bel.cov @ Ht.T + Rt
+        dist = distrax.MultivariateNormalFullCovariance(yhat, St)
+        log_p_pred = dist.log_prob(y)
+        return log_p_pred
 
     def step(self, bel, y, x, callback_fn):
         bel_pred = self._predict(bel)

@@ -1,6 +1,7 @@
 import jax
 import einops
 import distrax
+import dataclasses
 import jax.numpy as jnp
 from abc import ABC, abstractmethod
 from functools import partial
@@ -963,6 +964,32 @@ class ExpfamRLOUPR(GreedyRunlength):
     def update_bel(self, y, X, bel):
         bel_pred = self.filter._predict(bel)
         bel = self.filter._update(bel_pred, y, X)
+        return bel
+
+
+class RLOUPRFilter(GreedyRunlength):
+    """
+    Generic Greedy Runlength filter that fuses any filter's belief state with
+    runlength tracking via a dynamically created state class — no need to
+    pre-define every (filter-state, GreedyRunlengt) pair.
+    """
+    def __init__(self, p_change, shock, deflate_mean, filter, threshold=0.5):
+        super().__init__(p_change, shock, deflate_mean, threshold)
+        self.filter = filter
+
+    def init_bel(self, mean, cov, log_posterior_init=0.0):
+        state_filter = self.filter.init_bel(mean, cov)
+        StateClass = states.make_greedy_runlength_state(type(state_filter))
+        filter_fields = {f.name: getattr(state_filter, f.name) for f in dataclasses.fields(state_filter)}
+        bel = StateClass(**filter_fields, runlength=0, log_posterior=log_posterior_init)
+        return bel
+
+    def log_predictive_density(self, y, X, bel):
+        return self.filter.log_predictive_density(y, X, bel)
+
+    def update_bel(self, y, X, bel):
+        bel_pred = self.filter.predict(bel)
+        bel = self.filter.update(bel_pred, y, X)
         return bel
 
 

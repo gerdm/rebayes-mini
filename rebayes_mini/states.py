@@ -1,4 +1,6 @@
 import chex
+import dataclasses
+from functools import lru_cache
 
 @chex.dataclass
 class GaussState:
@@ -95,8 +97,29 @@ class MixtureExpertsGaussState:
 
 
 @chex.dataclass
-class GreedyRunlengthGaussState:
-    mean: chex.Array
-    cov: chex.Array
+class GreedyRunlengtState:
     runlength: int
     log_posterior: float
+
+
+@chex.dataclass
+class GreedyRunlengthGaussState(GaussState):
+    runlength: int
+    log_posterior: float
+
+
+@lru_cache(maxsize=None)
+def make_greedy_runlength_state(filter_state_class):
+    """
+    Dynamically create a chex dataclass that inherits from `filter_state_class`
+    and appends `runlength` and `log_posterior` fields — analogous to C = {**A, **B}.
+    Results are cached so the same class is reused across calls.
+    """
+    @chex.dataclass
+    class GreedyRunlengthState(filter_state_class):
+        runlength: int
+        log_posterior: float
+
+    GreedyRunlengthState.__name__ = f"GreedyRunlength{filter_state_class.__name__}"
+    GreedyRunlengthState.__qualname__ = f"GreedyRunlength{filter_state_class.__name__}"
+    return GreedyRunlengthState

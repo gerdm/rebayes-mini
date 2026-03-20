@@ -2,6 +2,7 @@ import jax
 import chex
 import distrax
 import jax.numpy as jnp
+from jax.scipy.special import gammaln
 from abc import ABC, abstractmethod
 from jax.flatten_util import ravel_pytree
 from rebayes_mini import callbacks
@@ -16,6 +17,14 @@ class GaussState:
 class GaussStateSqr:
     mean: chex.Array
     W: chex.Array
+
+
+@chex.dataclass
+class GaussUVState:
+    mean: chex.Array
+    cov: chex.Array
+    alpha: chex.Array  # InvGamma shape  (requires alpha > 1 for finite mean)
+    beta: chex.Array   # InvGamma scale  (beta > 0)
 
 
 class BaseFilter(ABC):
@@ -138,7 +147,7 @@ class ExtendedFilter(BaseFilter):
     def predict_fn(self, bel, x):
         return self.mean_fn(bel.mean, x).astype(float)
 
-    def update(self, bel, bel_pred, y, x):
+    def _update(self, bel, bel_pred, y, x):
         yhat = self.predict_fn(bel, x)
         Rt = jnp.atleast_2d(self.cov_fn(yhat))
 
@@ -153,12 +162,17 @@ class ExtendedFilter(BaseFilter):
         cov_update = (I - Kt @ Ht) @ bel_pred.cov @ (I - Kt @ Ht).T + Kt @ Rt @ Kt.T
         bel = bel.replace(mean=mean_update, cov=cov_update)
         return bel
+    
+    def update(self, bel, y, x):
+        bel_pred = bel
+        _update = lambda _, bel: self._update(bel, bel_pred, y, x)
+        bel_update = jax.lax.fori_loop(0, self.n_inner, _update, bel_pred, unroll=self.n_inner)
+        return bel_update
 
     def step(self, bel, y, x, callback_fn):
         bel_pred = self.predict(bel)
-        _update = lambda _, bel: self.update(bel, bel_pred, y, x)
-        bel_update = jax.lax.fori_loop(0, self.n_inner, _update, bel_pred, unroll=self.n_inner)
-
+        bel_update = self.update(bel_pred, y, x)
+        
         output = callback_fn(bel_update, bel_pred, y, x)
         return bel_update, output
 
@@ -171,6 +185,169 @@ class ExtendedFilter(BaseFilter):
 
         bel, hist = jax.lax.scan(_step, bel, (y, X))
         return bel, hist
+
+
+class ExtendedFilterUV(ExtendedFilter):
+    """
+    Iterated EKF with unknown scalar observation variance σ².
+
+    Models σ² ~ InvGamma(alpha, beta), so E[σ²] = beta / (alpha - 1).
+    The linearised observation covariance is R_t = sigma2 * I.
+    After the inner linearisation iterations, alpha and beta receive a
+    single conjugate update from the residual at the final mean estimate:
+
+        alpha <- alpha + n_obs / 2
+        beta  <- beta  + (err · err) / 2
+
+    Parameters
+    ----------
+    alpha0 : float
+        Initial InvGamma shape.  Must be > 1 so that E[σ²] is finite.
+    beta0 : float
+        Initial InvGamma scale (> 0).
+    """
+
+    def __init__(self, mean_fn, dynamics_covariance, alpha0=3.0, beta0=1.0, n_inner=1):
+        super().__init__(mean_fn, lambda yhat: jnp.eye(jnp.atleast_1d(yhat).shape[0]), dynamics_covariance, n_inner)
+        self.alpha0 = jnp.asarray(alpha0, dtype=float)
+        self.beta0 = jnp.asarray(beta0, dtype=float)
+
+    def _obs_cov(self, bel, yhat):
+        """Observation covariance from E[sigma^2 | bel] under InvGamma(alpha, beta)."""
+        sigma2 = bel.beta / (bel.alpha - 1)
+        dim_obs = jnp.atleast_1d(yhat).shape[0]
+        return sigma2 * jnp.eye(dim_obs)
+
+    def init_bel(self, params, cov=1.0):
+        self.rfn, self.mean_fn, init_params = self._initialise_flat_fn(self.mean_fn_og, params)
+        self.grad_mean = jax.jacrev(self.mean_fn)
+        nparams = len(init_params)
+        return GaussUVState(
+            mean=init_params,
+            cov=jnp.eye(nparams) * cov,
+            alpha=self.alpha0,
+            beta=self.beta0,
+        )
+
+    def predict(self, bel):
+        nparams = len(bel.mean)
+        pcov_pred = bel.cov + self.dynamics_covariance * jnp.eye(nparams)
+        return bel.replace(cov=pcov_pred)
+
+    def predictive_density(self, bel, X):
+        mean = self.mean_fn(bel.mean, X).astype(float)
+        mean = jnp.atleast_1d(mean)
+        Rt = self._obs_cov(bel, mean)
+        Ht = self.grad_mean(bel.mean, X)
+        covariance = Ht @ bel.cov @ Ht.T + Rt
+        dist = distrax.MultivariateNormalFullCovariance(mean, covariance)
+        return dist
+
+    def _multivariate_student_t_logpdf(self, y, mean, scale, dof):
+        """
+        Log density for multivariate Student-t with location `mean`,
+        scale matrix `scale`, and degrees of freedom `dof`.
+
+        Formula:
+        log p(y) = lgamma((nu + d)/2) - lgamma(nu/2)
+                   - 0.5 * (d * log(nu * pi) + log|Sigma|)
+                   - 0.5 * (nu + d) * log(1 + delta / nu)
+        where delta = (y - mean)^T Sigma^{-1} (y - mean).
+        """
+        y = jnp.atleast_1d(y)
+        mean = jnp.atleast_1d(mean)
+        d = y.shape[0]
+        err = y - mean
+
+        sign, logdet = jnp.linalg.slogdet(scale)
+        # Numerical guard; scale should be SPD, so sign is expected to be +1.
+        logdet = jnp.where(sign > 0, logdet, jnp.inf)
+        maha = err @ jnp.linalg.solve(scale, err)
+
+        log_norm = (
+            gammaln((dof + d) / 2)
+            - gammaln(dof / 2)
+            - 0.5 * (d * jnp.log(dof * jnp.pi) + logdet)
+        )
+        log_kernel = -0.5 * (dof + d) * jnp.log1p(maha / dof)
+        return log_norm + log_kernel
+
+    def log_posterior_predictive(self, y, X, bel):
+        """
+        Log posterior predictive after marginalizing unknown variance sigma^2.
+
+        Assumptions and form
+        --------------------
+        Uses the Normal-Inverse-Gamma conjugate result:
+
+            y | x, bel, sigma^2 ~ Normal(m(x), sigma^2 I)
+            sigma^2 | bel ~ InvGamma(alpha, beta)
+
+        which implies
+
+            y | x, bel ~ StudentT_nu(loc=m(x), scale=(beta/alpha) I),
+            nu = 2 * alpha.
+
+        For consistency with the filter's linearized predictive uncertainty,
+        we add the projected parameter uncertainty H P H^T to the Student-t
+        scale matrix.
+
+        References
+        ----------
+        - Murphy, K. P. (2007), Conjugate Bayesian analysis of the Gaussian.
+        - Normal-inverse-gamma distribution, marginal is Student-t
+          (Wikipedia: Normal-inverse-gamma distribution).
+        """
+        mean = self.mean_fn(bel.mean, X).astype(float)
+        mean = jnp.atleast_1d(mean)
+        Ht = self.grad_mean(bel.mean, X)
+
+        dof = 2.0 * bel.alpha
+        ig_scale = (bel.beta / bel.alpha) * jnp.eye(mean.shape[0])
+        scale = Ht @ bel.cov @ Ht.T + ig_scale
+
+        return self._multivariate_student_t_logpdf(y, mean, scale, dof)
+
+    def log_predictive_density(self, y, X, bel):
+        return self.log_posterior_predictive(y, X, bel)
+
+    def _update_state(self, bel, bel_pred, y, x):
+        """Update mean and cov using the current sigma2 estimate; alpha/beta unchanged."""
+        yhat = self.predict_fn(bel, x)
+        Rt = self._obs_cov(bel, yhat)
+
+        Ht = self.grad_mean(bel.mean, x)
+        St = Ht @ bel_pred.cov @ Ht.T + Rt
+        Kt = jnp.linalg.solve(St, Ht @ bel_pred.cov).T
+
+        err = y - yhat - Ht @ (bel_pred.mean - bel.mean)
+        mean_update = bel_pred.mean + Kt @ err
+
+        I = jnp.eye(len(bel.mean))
+        cov_update = (I - Kt @ Ht) @ bel_pred.cov @ (I - Kt @ Ht).T + Kt @ Rt @ Kt.T
+        return bel.replace(mean=mean_update, cov=cov_update)
+
+    def _update_variance(self, bel, y, x):
+        """Single conjugate InvGamma update from the residual at the current mean."""
+        err = (y - self.predict_fn(bel, x)).ravel()
+        n_obs = jnp.size(y)
+        return bel.replace(
+            alpha=bel.alpha + n_obs / 2,
+            beta=bel.beta + jnp.dot(err, err) / 2,
+        )
+
+    def update(self, bel, y, x):
+        bel_pred = bel
+        _iter = lambda _, b: self._update_state(b, bel_pred, y, x)
+        bel_update = jax.lax.fori_loop(0, self.n_inner, _iter, bel_pred, unroll=self.n_inner)
+        bel_update = self._update_variance(bel_update, y, x)
+        return bel_update
+    
+    def step(self, bel, y, x, callback_fn):
+        bel_pred = self.predict(bel)
+        bel_update = self.update(bel_pred, y, x)
+        output = callback_fn(bel_update, bel_pred, y, x)
+        return bel_update, output
 
 
 class SquareRootFilter(BaseFilter):
