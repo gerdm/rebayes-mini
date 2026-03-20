@@ -9,6 +9,49 @@ class GaussState:
 
 
 @chex.dataclass
+class OutlierEKFState:
+    """State of the outlier-detection EKF."""
+    mean: chex.Array
+    cov: chex.Array
+    alpha: float
+    beta: float
+    pr_inlier: float
+    tau: float
+
+
+@chex.dataclass
+class WOCFState:
+    """Weighted observation-covariance filter state."""
+    mean: chex.Array
+    cov: chex.Array
+    key: chex.Array
+    weighting_term: float = 1.0
+
+
+@chex.dataclass
+class KFTState:
+    """State of a linear Kalman filter with tracked residual."""
+    mean: chex.Array
+    cov: chex.Array
+    err: chex.Array
+
+
+@chex.dataclass
+class RobustStState:
+    """State for robust Student-t filtering with adaptive observation noise."""
+    mean: chex.Array
+    cov: chex.Array
+    obs_cov_scale: chex.Array
+    obs_cov_dof: float
+    weighting_shape: float
+    weighting_rate: float
+    dof_shape: float
+    dof_rate: float
+    rho: float
+    dim_obs: int
+
+
+@chex.dataclass
 class PULSEGaussState:
     mean_hidden: chex.Array
     prec_hidden: chex.Array
