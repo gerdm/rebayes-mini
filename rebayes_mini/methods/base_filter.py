@@ -235,13 +235,45 @@ class ExtendedFilterUV(ExtendedFilter):
         return bel.replace(cov=pcov_pred)
 
     def predictive_density(self, bel, X):
-        mean = self.mean_fn(bel.mean, X).astype(float)
-        mean = jnp.atleast_1d(mean)
-        Rt = self._obs_cov(bel, mean)
-        Ht = self.grad_mean(bel.mean, X)
-        covariance = Ht @ bel.cov @ Ht.T + Rt
+        mean, covariance = self.posterior_predictive_moments(bel, X)
         dist = distrax.MultivariateNormalFullCovariance(mean, covariance)
         return dist
+
+    def _posterior_predictive_student_t_params(self, bel, X):
+        """
+        Student-t posterior predictive parameters after integrating out sigma^2.
+
+        Returns
+        -------
+        mean : array
+            Location parameter.
+        scale : array
+            Student-t scale matrix (not covariance).
+        dof : scalar
+            Degrees of freedom.
+        """
+        mean = self.mean_fn(bel.mean, X).astype(float)
+        mean = jnp.atleast_1d(mean)
+        Ht = self.grad_mean(bel.mean, X)
+
+        dof = 2.0 * bel.alpha
+        ig_scale = (bel.beta / bel.alpha) * jnp.eye(mean.shape[0])
+        scale = Ht @ bel.cov @ Ht.T + ig_scale
+        return mean, scale, dof
+
+    def posterior_predictive_moments(self, bel, X):
+        """
+        Return posterior predictive mean and variance matrix.
+
+        For a multivariate Student-t with location `mean`, scale `scale`, and
+        degrees of freedom `dof`, the covariance is:
+
+            Var[y | x, bel] = dof / (dof - 2) * scale,   dof > 2.
+        """
+        mean, scale, dof = self._posterior_predictive_student_t_params(bel, X)
+        factor = dof / (dof - 2)
+        variance = factor * scale
+        return mean, variance
 
     def _multivariate_student_t_logpdf(self, y, mean, scale, dof):
         """
@@ -260,6 +292,8 @@ class ExtendedFilterUV(ExtendedFilter):
         err = y - mean
 
         sign, logdet = jnp.linalg.slogdet(scale)
+        sign = jnp.asarray(sign)
+        logdet = jnp.asarray(logdet)
         # Numerical guard; scale should be SPD, so sign is expected to be +1.
         logdet = jnp.where(sign > 0, logdet, jnp.inf)
         maha = err @ jnp.linalg.solve(scale, err)
@@ -298,13 +332,7 @@ class ExtendedFilterUV(ExtendedFilter):
         - Normal-inverse-gamma distribution, marginal is Student-t
           (Wikipedia: Normal-inverse-gamma distribution).
         """
-        mean = self.mean_fn(bel.mean, X).astype(float)
-        mean = jnp.atleast_1d(mean)
-        Ht = self.grad_mean(bel.mean, X)
-
-        dof = 2.0 * bel.alpha
-        ig_scale = (bel.beta / bel.alpha) * jnp.eye(mean.shape[0])
-        scale = Ht @ bel.cov @ Ht.T + ig_scale
+        mean, scale, dof = self._posterior_predictive_student_t_params(bel, X)
 
         return self._multivariate_student_t_logpdf(y, mean, scale, dof)
 
