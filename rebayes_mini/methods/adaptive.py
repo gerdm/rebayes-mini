@@ -993,6 +993,38 @@ class RLOUPRFilter(GreedyRunlength):
         return bel
 
 
+class RLPRFilter(Runlength):
+    """
+    Generic Runlength prior-reset filter that fuses any filter belief state with
+    runlength tracking via a dynamically created state class.
+    """
+    def __init__(self, p_change, K, filter):
+        super().__init__(p_change, K)
+        self.filter = filter
+
+    def init_bel(self, mean, cov, log_joint_init=0.0):
+        state_filter = self.filter.init_bel(mean, cov)
+        StateClass = states.make_runlength_state(type(state_filter))
+        filter_fields = {
+            f.name: jnp.repeat(jnp.expand_dims(getattr(state_filter, f.name), axis=0), self.K, axis=0)
+            for f in dataclasses.fields(state_filter)
+        }
+        bel = StateClass(
+            **filter_fields,
+            runlength=jnp.zeros(self.K),
+            log_joint=(jnp.ones((self.K,)) * -jnp.inf).at[0].set(log_joint_init),
+        )
+        return bel
+
+    def log_predictive_density(self, y, X, bel):
+        return self.filter.log_predictive_density(y, X, bel)
+
+    def update_bel(self, y, X, bel):
+        bel_pred = self.filter.predict(bel)
+        bel = self.filter.update(bel_pred, y, X)
+        return bel
+
+
 class ExpfamRLCR(RunlengthCovarianceReset):
     """
     Runlength with covariance reset.

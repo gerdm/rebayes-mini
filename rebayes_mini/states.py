@@ -166,3 +166,20 @@ def make_greedy_runlength_state(filter_state_class):
     GreedyRunlengthState.__name__ = f"GreedyRunlength{filter_state_class.__name__}"
     GreedyRunlengthState.__qualname__ = f"GreedyRunlength{filter_state_class.__name__}"
     return GreedyRunlengthState
+
+
+@lru_cache(maxsize=None)
+def make_runlength_state(filter_state_class):
+    """
+    Dynamically create a chex dataclass that inherits from `filter_state_class`
+    and appends `runlength` and `log_joint` fields.
+    Results are cached so the same class is reused across calls.
+    """
+    @chex.dataclass
+    class RunlengthState(filter_state_class):
+        runlength: chex.Array
+        log_joint: chex.Array
+
+    RunlengthState.__name__ = f"Runlength{filter_state_class.__name__}"
+    RunlengthState.__qualname__ = f"Runlength{filter_state_class.__name__}"
+    return RunlengthState

@@ -101,13 +101,22 @@ class ExtendedFilter(BaseFilter):
         )
 
 
-    def predictive_density(self, bel, X):
-        mean = self.mean_fn(bel.mean, X).astype(float)
-        # mean = self.mean(eta)
+    def posterior_predictive_moments(self, bel, X):
+        """
+        Return posterior predictive mean and covariance.
+
+        For a Gaussian observation model:
+
+            Var[y | x, bel] = H P H^T + R
+        """
+        mean = jnp.atleast_1d(self.mean_fn(bel.mean, X).astype(float))
         Rt = jnp.atleast_2d(self.cov_fn(mean))
         Ht = self.grad_mean(bel.mean, X)
         covariance = Ht @ bel.cov @ Ht.T + Rt
-        mean = jnp.atleast_1d(mean)
+        return mean, covariance
+
+    def predictive_density(self, bel, X):
+        mean, covariance = self.posterior_predictive_moments(bel, X)
         dist = distrax.MultivariateNormalFullCovariance(mean, covariance)
         return dist
 
